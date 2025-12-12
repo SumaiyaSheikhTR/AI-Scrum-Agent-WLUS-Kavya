@@ -1,0 +1,24 @@
+/**
+ * Debug utility for Thomson Reuters OpenAI Service
+ * This will help track issues with the team-level conversations
+ */
+
+// Add this to the top of thomsonReutersOpenAiService.ts
+const DEBUG_TR_OPENAI = true;
+
+// Add this function in the class
+function debugLog(...args: any[]) {
+  if (DEBUG_TR_OPENAI) {
+    console.log('[TR-OpenAI]', ...args);
+  }
+}
+
+// Usage example
+// In processTeamChat:
+debugLog('Processing team chat with message:', message.substring(0, 50) + '...');
+debugLog('Team members:', teamMembers.length);
+debugLog('Team capacities:', teamCapacities?.length || 0);
+debugLog('Work items:', workItems.length);
+
+// In callOpenAI:
+debugLog('Making OpenAI call with message length:', messages[1].content.length);

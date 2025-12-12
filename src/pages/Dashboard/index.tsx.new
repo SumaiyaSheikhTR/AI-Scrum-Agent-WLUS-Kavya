@@ -1,0 +1,878 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { 
+  Grid, 
+  Paper, 
+  Typography, 
+  Box, 
+  CircularProgress, 
+  Alert, 
+  LinearProgress, 
+  ToggleButton, 
+  ToggleButtonGroup,
+  Button,
+  IconButton,
+  Chip,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  SelectChangeEvent,
+  Fab,
+  Drawer,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow
+} from '@mui/material';
+import { 
+  Menu as MenuIcon,
+  ChevronLeft as ChevronLeftIcon,
+  Dashboard as DashboardIcon,
+  FilterList as FilterListIcon,
+  Analytics as AnalyticsIcon,
+  Settings as SettingsIcon,
+  Group as TeamIcon,
+  Assignment as WorkItemsIcon,
+  SmartToy as AiAssistantIcon,
+  Close as CloseIcon,
+  OpenInNew as OpenInNewIcon
+} from '@mui/icons-material';
+import { styled } from '@mui/material/styles';
+import adoService, { Sprint, WorkItem } from '../../services/adoService';
+import ExecutiveSummaryWithActivityMonitoring from '../../components/dashboard/ExecutiveSummaryWithActivityMonitoring';
+// Hidden components - uncomment if needed
+// import AiScrumAssistant from '../../components/dashboard/AiScrumAssistant';
+// import DeveloperEngagementPanel from '../../components/dashboard/DeveloperEngagementPanel';
+// import GitPRMonitoringPanel from '../../components/dashboard/GitPRMonitoringPanel';
+
+const Item = styled(Paper)(({ theme }) => ({
+  backgroundColor: theme.palette.mode === 'dark' ? '#1A2027' : '#ffffff',
+  ...theme.typography.body2,
+  padding: theme.spacing(2),
+  color: theme.palette.text.secondary,
+  borderRadius: 8,
+  border: '1px solid #dee2e6',
+  boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+}));
+
+const Dashboard: React.FC = () => {
+  const [isLoading, setIsLoading] = useState(false); // Changed from true to false to prevent loading spinner
+  const [error, setError] = useState<string | null>(null);
+  const [currentSprint, setCurrentSprint] = useState<Sprint | null>(null);
+  const [availableSprints, setAvailableSprints] = useState<Sprint[]>([]);
+  const [selectedSprintId, setSelectedSprintId] = useState<string | null>(null);
+  const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [metricsFilter, setMetricsFilter] = useState<string>('all');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sprintLoading, setSprintLoading] = useState(false);
+  
+  // Dialog states for showing work item details
+  const [isGroupDialogOpen, setIsGroupDialogOpen] = useState(false);
+  const [groupDialogTitle, setGroupDialogTitle] = useState('');
+  const [groupDialogItems, setGroupDialogItems] = useState<WorkItem[]>([]);
+  
+  // Use ref for cache to avoid dependency issues
+  const dataCacheRef = useRef<{
+    timestamp: number;
+    sprintId: string | null;
+    currentSprint: Sprint | null;
+    availableSprints: Sprint[];
+    workItems: WorkItem[];
+  } | null>(null);
+
+  // Cache duration: 10 minutes (increased from 5 to reduce flickering)
+  const CACHE_DURATION = 10 * 60 * 1000;
+
+  // Helper function to get selected sprint
+  const getSelectedSprint = () => {
+    if (!selectedSprintId) return currentSprint;
+    return availableSprints.find(sprint => sprint.id.toString() === selectedSprintId) || currentSprint;
+  };
+
+  // Handle sprint selection change
+  const handleSprintChange = (event: SelectChangeEvent<string>) => {
+    const sprintId = event.target.value;
+    console.log(`📅 SPRINT_CHANGE: Selected sprint ID: ${sprintId}`);
+    setSelectedSprintId(sprintId);
+    onSprintChange(sprintId);
+  };
+
+  // Handle metrics filter change
+  const handleMetricsFilterChange = (
+    event: React.MouseEvent<HTMLElement>,
+    newFilter: string,
+  ) => {
+    if (newFilter !== null) {
+      setMetricsFilter(newFilter);
+    }
+  };
+
+  // Fetch dashboard data on component mount or refresh
+  const fetchDashboardData = useCallback(async (forceRefresh: boolean = false) => {
+    if (isLoading) return;
+    
+    console.log('📅 DASHBOARD: Fetching dashboard data...');
+    console.log('📅 DASHBOARD: Force refresh:', forceRefresh);
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Use cached data if available and not forcing refresh
+      if (!forceRefresh && dataCacheRef.current) {
+        const cacheAge = Date.now() - dataCacheRef.current.timestamp;
+        if (cacheAge < CACHE_DURATION) {
+          console.log(`📅 DASHBOARD: Using cached data (${Math.round(cacheAge / 1000)}s old)`);
+          setCurrentSprint(dataCacheRef.current.currentSprint);
+          setAvailableSprints(dataCacheRef.current.availableSprints);
+          setWorkItems(dataCacheRef.current.workItems);
+          setIsLoading(false);
+          return;
+        }
+        console.log(`📅 DASHBOARD: Cache expired (${Math.round(cacheAge / 1000)}s old)`);
+      }
+      
+      console.log('📅 DASHBOARD: Fetching fresh data...');
+      
+      // 1. Fetch current sprint
+      const sprint = await adoService.getCurrentSprint();
+      if (!sprint) {
+        throw new Error('No active sprint found');
+      }
+      console.log('📅 DASHBOARD: Current sprint:', sprint);
+      setCurrentSprint(sprint);
+      
+      // 2. Fetch available sprints for dropdown
+      const sprints = await adoService.getSprints();
+      console.log(`📅 DASHBOARD: Available sprints: ${sprints.length}`);
+      setAvailableSprints(sprints);
+      
+      // 3. Fetch work items for current sprint
+      const items = await adoService.getSprintWorkItems(sprint.id);
+      console.log(`📅 DASHBOARD: Sprint work items: ${items.length}`);
+      setWorkItems(items);
+      
+      // Update cache
+      dataCacheRef.current = {
+        timestamp: Date.now(),
+        sprintId: sprint.id.toString(),
+        currentSprint: sprint,
+        availableSprints: sprints,
+        workItems: items
+      };
+      
+      console.log('📅 DASHBOARD: Dashboard data loaded successfully');
+    } catch (err) {
+      console.error('📅 DASHBOARD: Error loading dashboard data:', err);
+      setError(`Failed to load dashboard data: ${(err as Error).message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isLoading]);
+
+  // Initial data fetch on component mount
+  useEffect(() => {
+    fetchDashboardData();
+    
+    // Cleanup function
+    return () => {
+      console.log('📅 DASHBOARD: Component unmounting, cleaning up...');
+    };
+  }, [fetchDashboardData]);
+
+  // Handle sprint change and fetch data for the selected sprint
+  const onSprintChange = async (sprintId: string) => {
+    if (!sprintId) {
+      console.log('📅 SPRINT_CHANGE: No sprint ID provided, using current sprint');
+      setWorkItems([]);
+      return;
+    }
+    
+    console.log(`📅 SPRINT_CHANGE: Selected sprint ID: ${sprintId}`);
+    
+    // Check if we have this sprint's data in cache
+    if (dataCacheRef.current && dataCacheRef.current.sprintId === sprintId) {
+      const cacheAge = Date.now() - dataCacheRef.current.timestamp;
+      if (cacheAge < CACHE_DURATION) {
+        console.log(`📅 SPRINT_CHANGE: Using cached data for sprint ${sprintId} (${Math.round(cacheAge / 1000)}s old)`);
+        const currentCache = dataCacheRef.current;
+        setCurrentSprint(currentCache.currentSprint);
+        setAvailableSprints(currentCache.availableSprints);
+        setWorkItems(currentCache.workItems);
+        console.log('📅 ======================================================');
+        return;
+      }
+    }
+    
+    try {
+      console.log(`📅 SPRINT_CHANGE: No valid cache found, fetching fresh data for sprint ${sprintId}`);
+      setSprintLoading(true);
+      setError(null);
+      
+      // Fetch work items for the selected sprint
+      const items = await adoService.getSprintWorkItems(sprintId);
+      setWorkItems(items);
+      console.log(`📅 SPRINT_CHANGE: ✅ Successfully fetched ${items.length} work items for sprint ${sprintId}`);
+      
+      // Update cache with new sprint data
+      dataCacheRef.current = {
+        timestamp: Date.now(),
+        sprintId: sprintId,
+        currentSprint: currentSprint,
+        availableSprints: availableSprints,
+        workItems: items
+      };
+      
+      console.log(`📅 SPRINT_CHANGE: Cache updated for sprint ${sprintId} at ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      console.error('📅 SPRINT_CHANGE: ❌ Error fetching sprint work items:', err);
+      setError('Failed to load sprint work items.');
+    } finally {
+      setSprintLoading(false);
+      console.log('📅 ======================================================');
+    }
+  };
+
+  // Handle opening work item details dialog
+  const handleGroupClick = (title: string, items: WorkItem[]) => {
+    setGroupDialogTitle(title);
+    setGroupDialogItems(items);
+    setIsGroupDialogOpen(true);
+  };
+
+  // Helper function to generate a color gradient based on tag name
+  const getTagBackgroundGradient = (tag: string): string => {
+    // Generate a consistent hash for the tag to get a stable color
+    let hash = 0;
+    for (let i = 0; i < tag.length; i++) {
+      hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    
+    // Generate three colors for the gradient
+    const hue1 = Math.abs(hash % 360);
+    const hue2 = (hue1 + 20) % 360;
+    
+    // Generate a gradient with medium saturation and light/brightness
+    return `linear-gradient(135deg, hsl(${hue1}, 65%, 45%) 0%, hsl(${hue2}, 70%, 50%) 100%)`;
+  };
+
+  // Generate ADO work item URL
+  const getWorkItemUrl = (id: number): string => {
+    const config = adoService.getConfig();
+    return `https://dev.azure.com/${config.organization}/${config.project}/_workitems/edit/${id}`;
+  };
+
+  // Helper function to format date
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  // Loading indicator
+  if (isLoading && !workItems.length) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '80vh', flexDirection: 'column' }}>
+        <CircularProgress size={60} thickness={4} sx={{ mb: 3 }} />
+        <Typography variant="h6" sx={{ mb: 2 }}>
+          Loading Dashboard...
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Fetching sprint data and work items
+        </Typography>
+      </Box>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <Box sx={{ flexGrow: 1 }}>
+        <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
+        <Button variant="contained" onClick={() => fetchDashboardData(true)}>
+          Retry
+        </Button>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ display: 'flex', position: 'relative' }}>
+      {/* Left Sidebar */}
+      <Drawer
+        anchor="left"
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        variant="temporary"
+        sx={{
+          '& .MuiDrawer-paper': {
+            width: 320,
+            backgroundColor: '#f8f9fa',
+            borderRight: '1px solid #dee2e6',
+            boxShadow: '2px 0 8px rgba(0,0,0,0.1)',
+          },
+        }}
+      >
+        {/* Sidebar Header */}
+        <Box sx={{ 
+          p: 3, 
+          background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 100%)',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+            AI Scrum Agent
+          </Typography>
+          <IconButton 
+            onClick={() => setSidebarOpen(false)}
+            sx={{ color: 'white' }}
+          >
+            <ChevronLeftIcon />
+          </IconButton>
+        </Box>
+        
+        <Divider />
+        
+        {/* Navigation Menu */}
+        <List sx={{ p: 2 }}>
+          <Typography variant="subtitle2" sx={{ 
+            px: 2, 
+            pb: 1, 
+            color: 'text.secondary',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            fontSize: '0.75rem',
+            letterSpacing: '0.5px'
+          }}>
+            Navigation
+          </Typography>
+          
+          <ListItem disablePadding>
+            <ListItemButton 
+              selected={true}
+              sx={{ 
+                borderRadius: 2,
+                mb: 1
+              }}
+            >
+              <ListItemIcon>
+                <DashboardIcon />
+              </ListItemIcon>
+              <ListItemText primary="Dashboard" />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding>
+            <ListItemButton sx={{ borderRadius: 2, mb: 1 }}>
+              <ListItemIcon>
+                <TeamIcon />
+              </ListItemIcon>
+              <ListItemText primary="Team" />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding>
+            <ListItemButton sx={{ borderRadius: 2, mb: 1 }}>
+              <ListItemIcon>
+                <WorkItemsIcon />
+              </ListItemIcon>
+              <ListItemText primary="Work Items" />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding>
+            <ListItemButton sx={{ borderRadius: 2, mb: 1 }}>
+              <ListItemIcon>
+                <AiAssistantIcon />
+              </ListItemIcon>
+              <ListItemText primary="AI Assistant" />
+            </ListItemButton>
+          </ListItem>
+          
+          <Divider sx={{ my: 2 }} />
+          
+          <Typography variant="subtitle2" sx={{ 
+            px: 2, 
+            pb: 1, 
+            color: 'text.secondary',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            fontSize: '0.75rem',
+            letterSpacing: '0.5px'
+          }}>
+            Utilities
+          </Typography>
+          
+          <ListItem disablePadding>
+            <ListItemButton sx={{ borderRadius: 2, mb: 1 }}>
+              <ListItemIcon>
+                <AnalyticsIcon />
+              </ListItemIcon>
+              <ListItemText primary="Analytics" />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding>
+            <ListItemButton sx={{ borderRadius: 2 }}>
+              <ListItemIcon>
+                <SettingsIcon />
+              </ListItemIcon>
+              <ListItemText primary="Settings" />
+            </ListItemButton>
+          </ListItem>
+        </List>
+      </Drawer>
+      
+      {/* Main Content */}
+      <Box sx={{ flexGrow: 1, p: 3, overflow: 'auto', maxHeight: '100vh' }}>
+        {/* Page Header with Controls */}
+        <Box sx={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          mb: 3,
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: { xs: 2, sm: 0 }
+        }}>
+          <Box>
+            <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
+              Dashboard
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              {currentSprint ? (
+                <>Sprint: <strong>{currentSprint.name}</strong> ({formatDate(currentSprint.startDate)} - {formatDate(currentSprint.endDate)})</>
+              ) : 'No active sprint'}
+            </Typography>
+          </Box>
+          
+          <Box sx={{ 
+            display: 'flex', 
+            gap: 2,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            justifyContent: { xs: 'center', sm: 'flex-end' },
+            width: { xs: '100%', sm: 'auto' }
+          }}>
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Sprint</InputLabel>
+              <Select
+                value={selectedSprintId || (currentSprint ? currentSprint.id.toString() : '')}
+                label="Sprint"
+                onChange={handleSprintChange}
+                disabled={sprintLoading}
+              >
+                {availableSprints.map((sprint) => (
+                  <MenuItem key={sprint.id} value={sprint.id.toString()}>
+                    {sprint.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            
+            <ToggleButtonGroup
+              value={metricsFilter}
+              exclusive
+              onChange={handleMetricsFilterChange}
+              aria-label="metrics filter"
+              size="small"
+            >
+              <ToggleButton value="all" aria-label="all metrics">
+                All
+              </ToggleButton>
+              <ToggleButton value="active" aria-label="active metrics">
+                Active
+              </ToggleButton>
+              <ToggleButton value="completed" aria-label="completed metrics">
+                Completed
+              </ToggleButton>
+            </ToggleButtonGroup>
+            
+            <Button 
+              variant="contained" 
+              startIcon={<RefreshIcon />} 
+              onClick={() => fetchDashboardData(true)}
+              size="small"
+            >
+              Refresh
+            </Button>
+            
+            <IconButton 
+              color="primary" 
+              aria-label="open menu"
+              sx={{ display: { sm: 'none' } }}
+              onClick={() => setSidebarOpen(true)}
+            >
+              <MenuIcon />
+            </IconButton>
+          </Box>
+        </Box>
+        
+        {/* Main Dashboard Content */}
+        <Grid container spacing={3}>
+          {/* Executive Summary */}
+          <Grid item xs={12}>
+            <ExecutiveSummaryWithActivityMonitoring 
+              sprint={getSelectedSprint()} 
+              workItems={workItems} 
+              filter={metricsFilter}
+            />
+          </Grid>
+          
+          {/* Sprint Status Card */}
+          <Grid item xs={12}>
+            <Item>
+              <Box sx={{ 
+                p: 3, 
+                borderRadius: 3,
+                background: 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)',
+                color: 'white',
+                textAlign: 'center'
+              }}>
+                <Typography variant="h5" sx={{ 
+                  fontWeight: 700, 
+                  mb: 1 
+                }}>
+                  {currentSprint?.name || 'Current Sprint'}
+                </Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'center', gap: 4, mb: 2, flexWrap: 'wrap' }}>
+                  <Box>
+                    <Typography variant="body2" sx={{ opacity: 0.8 }}>Start Date</Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      {currentSprint ? formatDate(currentSprint.startDate) : 'N/A'}
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ opacity: 0.8 }}>End Date</Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      {currentSprint ? formatDate(currentSprint.endDate) : 'N/A'}
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ opacity: 0.8 }}>Total Work Items</Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      {workItems.length}
+                    </Typography>
+                  </Box>
+                </Box>
+                
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="body2" sx={{ mb: 1 }}>Sprint Progress</Typography>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={60} /* This should be calculated dynamically */
+                    sx={{
+                      height: 10,
+                      borderRadius: 5,
+                      backgroundColor: 'rgba(255,255,255,0.2)',
+                      '& .MuiLinearProgress-bar': {
+                        backgroundColor: 'rgba(255,255,255,0.9)'
+                      }
+                    }}
+                  />
+                </Box>
+                
+                <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2, flexWrap: 'wrap' }}>
+                  <Chip 
+                    label={`${workItems.filter(item => item.state === 'New' || item.state === 'To Do').length} Planned`} 
+                    sx={{ backgroundColor: 'rgba(255,255,255,0.15)', color: 'white' }} 
+                  />
+                  <Chip 
+                    label={`${workItems.filter(item => item.state === 'Active' || item.state === 'In Progress').length} In Progress`} 
+                    sx={{ backgroundColor: 'rgba(255,255,255,0.15)', color: 'white' }} 
+                  />
+                  <Chip 
+                    label={`${workItems.filter(item => item.state === 'Done' || item.state === 'Closed' || item.state === 'Completed').length} Completed`} 
+                    sx={{ backgroundColor: 'rgba(255,255,255,0.15)', color: 'white' }} 
+                  />
+                </Box>
+              </Box>
+            </Item>
+          </Grid>
+          
+          {/* Work Item Categories Section */}
+          <Grid item xs={12}>
+            <Box sx={{ 
+              p: 4, 
+              borderRadius: 3,
+              background: 'linear-gradient(135deg, #4a6572 0%, #334752 100%)',
+              textAlign: 'center',
+              mb: 3
+            }}>
+              <Typography variant="h5" sx={{ 
+                color: '#ffffff', 
+                fontWeight: 600,
+                textAlign: 'center',
+                mb: 1,
+                letterSpacing: '0.5px'
+              }}>
+                📚 Task Categories by Tags
+              </Typography>
+              <Typography variant="body1" sx={{ 
+                color: 'rgba(255,255,255,0.9)', 
+                textAlign: 'center',
+                fontSize: '1.1rem'
+              }}>
+                Tasks grouped by all available tags
+              </Typography>
+            </Box>
+
+            {/* Tag-based Categorization Tiles */}
+            <Grid container spacing={3}>
+              {(() => {
+                // Create a map to hold all unique tags and their associated tasks
+                const tagMap = new Map<string, WorkItem[]>();
+                
+                // Add a category for items with no tags
+                tagMap.set('No Tags', []);
+                
+                // Process each work item and categorize by tags
+                workItems.forEach(item => {
+                  if (item.type === 'Task' || item.type === 'User Story' || item.type === 'Bug') {
+                    if (!item.tags || item.tags.length === 0) {
+                      // Add to "No Tags" category
+                      const noTagItems = tagMap.get('No Tags') || [];
+                      noTagItems.push(item);
+                      tagMap.set('No Tags', noTagItems);
+                    } else {
+                      // Add to each tag's category
+                      item.tags.forEach(tag => {
+                        const tagItems = tagMap.get(tag) || [];
+                        tagItems.push(item);
+                        tagMap.set(tag, tagItems);
+                      });
+                    }
+                  }
+                });
+                
+                // Convert the map to an array of tag/items pairs
+                const tagCategories = Array.from(tagMap.entries())
+                  .map(([tag, items]) => ({ tag, items }))
+                  .filter(category => category.items.length > 0) // Only show categories with items
+                  .sort((a, b) => b.items.length - a.items.length); // Sort by number of items
+
+                return (
+                  <>
+                    {tagCategories.map(category => {
+                      const completed = category.items.filter(item => 
+                        item.state === 'Done' || item.state === 'Closed'
+                      ).length;
+                      
+                      const progress = category.items.length > 0 
+                        ? Math.round((completed / category.items.length) * 100) 
+                        : 0;
+                      
+                      return (
+                        <Grid item xs={12} sm={6} md={4} key={category.tag}>
+                          <Paper 
+                            elevation={4} 
+                            sx={{ 
+                              p: 3, 
+                              textAlign: 'center',
+                              cursor: 'pointer',
+                              borderRadius: 3,
+                              background: getTagBackgroundGradient(category.tag),
+                              color: 'white',
+                              position: 'relative',
+                              overflow: 'hidden',
+                              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)',
+                              transition: 'all 0.3s ease-in-out',
+                              '&:hover': {
+                                transform: 'translateY(-2px)',
+                                boxShadow: '0 6px 20px rgba(0, 0, 0, 0.3)'
+                              },
+                            }}
+                            onClick={() => handleGroupClick(`${category.tag} Tasks`, category.items)}
+                          >
+                            <Box sx={{ mb: 2 }}>
+                              <Chip 
+                                label={category.tag} 
+                                sx={{ 
+                                  bgcolor: 'rgba(255,255,255,0.2)', 
+                                  color: 'white',
+                                  fontWeight: 600,
+                                  fontSize: '1rem',
+                                  padding: '8px',
+                                  mb: 2
+                                }} 
+                              />
+                              <Typography variant="h4" sx={{ fontWeight: 600, mb: 0.5 }}>
+                                {category.items.length}
+                              </Typography>
+                              <Typography variant="body1" sx={{ fontWeight: 400, mb: 2 }}>
+                                {category.items.length === 1 ? 'Item' : 'Items'}
+                              </Typography>
+                            </Box>
+
+                            <Box sx={{ mb: 1 }}>
+                              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                                {completed} of {category.items.length} completed
+                              </Typography>
+                              <LinearProgress 
+                                variant="determinate" 
+                                value={progress} 
+                                sx={{
+                                  height: 8,
+                                  borderRadius: 5,
+                                  backgroundColor: 'rgba(255,255,255,0.2)',
+                                  '& .MuiLinearProgress-bar': {
+                                    backgroundColor: 'rgba(255,255,255,0.8)'
+                                  }
+                                }}
+                              />
+                            </Box>
+
+                            <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1, mt: 3 }}>
+                              <Chip 
+                                label={`${progress}% Complete`} 
+                                sx={{ 
+                                  backgroundColor: 'rgba(255,255,255,0.15)', 
+                                  color: 'white',
+                                  fontWeight: 500,
+                                  fontSize: '0.7rem'
+                                }} 
+                              />
+                            </Box>
+                          </Paper>
+                        </Grid>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </Grid>
+          </Grid>
+        </Grid>
+      </Box>
+      
+      {/* Items List Dialog */}
+      <Dialog
+        open={isGroupDialogOpen}
+        onClose={() => setIsGroupDialogOpen(false)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle sx={{ 
+          display: 'flex', 
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          borderBottom: '1px solid #e0e0e0'
+        }}>
+          {groupDialogTitle}
+          <IconButton onClick={() => setIsGroupDialogOpen(false)} aria-label="close">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          <TableContainer component={Paper} sx={{ mt: 2, border: '1px solid #e0e0e0' }}>
+            <Table sx={{ minWidth: 650 }} size="small">
+              <TableHead sx={{ backgroundColor: '#f5f5f5' }}>
+                <TableRow>
+                  <TableCell>ID</TableCell>
+                  <TableCell>Title</TableCell>
+                  <TableCell>Type</TableCell>
+                  <TableCell>State</TableCell>
+                  <TableCell>Assigned To</TableCell>
+                  <TableCell>Tags</TableCell>
+                  <TableCell>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {groupDialogItems.map((item) => (
+                  <TableRow key={item.id} sx={{ '&:hover': { backgroundColor: '#f9f9f9' } }}>
+                    <TableCell>{item.id}</TableCell>
+                    <TableCell sx={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.title}
+                    </TableCell>
+                    <TableCell>{item.type}</TableCell>
+                    <TableCell>
+                      <Chip 
+                        label={item.state} 
+                        size="small"
+                        sx={{ 
+                          backgroundColor: 
+                            item.state === 'Done' || item.state === 'Closed' ? '#4caf50' :
+                            item.state === 'Active' || item.state === 'In Progress' ? '#2196f3' :
+                            '#ff9800',
+                          color: 'white',
+                          fontWeight: 500
+                        }} 
+                      />
+                    </TableCell>
+                    <TableCell>{item.assignedTo || 'Unassigned'}</TableCell>
+                    <TableCell>
+                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                        {item.tags && item.tags.length > 0 ? (
+                          item.tags.map((tag, index) => (
+                            <Chip 
+                              key={index} 
+                              label={tag} 
+                              size="small" 
+                              sx={{ fontSize: '0.7rem' }} 
+                            />
+                          ))
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">No tags</Typography>
+                        )}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <IconButton 
+                        size="small" 
+                        color="primary"
+                        href={getWorkItemUrl(item.id)} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                      >
+                        <OpenInNewIcon fontSize="small" />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsGroupDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Floating Action Button for mobile */}
+      <Box 
+        sx={{ 
+          position: 'fixed', 
+          bottom: 16, 
+          right: 16,
+          display: { xs: 'block', sm: 'none' }
+        }}
+      >
+        <Fab 
+          color="primary" 
+          aria-label="menu"
+          onClick={() => setSidebarOpen(true)}
+        >
+          <MenuIcon />
+        </Fab>
+      </Box>
+    </Box>
+  );
+};
+
+export default Dashboard;

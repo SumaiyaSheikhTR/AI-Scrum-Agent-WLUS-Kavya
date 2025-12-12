@@ -1,0 +1,1265 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { 
+  Box, Typography, TextField, Button, CircularProgress, Avatar, 
+  IconButton, Card, CardContent, Grid, LinearProgress,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  FormControl, InputLabel, Select, MenuItem, Snackbar,
+  Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow
+} from '@mui/material';
+import SendIcon from '@mui/icons-material/Send';
+import CloseIcon from '@mui/icons-material/Close';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import AssessmentIcon from '@mui/icons-material/Assessment';
+import AssignmentIcon from '@mui/icons-material/Assignment';
+import TimelineIcon from '@mui/icons-material/Timeline';
+import BarChartIcon from '@mui/icons-material/BarChart';
+import TableChartIcon from '@mui/icons-material/TableChart';
+import { 
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  PieChart, Pie, Cell
+} from 'recharts';
+import { TeamMember, TeamCapacity, WorkItem, Sprint } from '../../types';
+import adoService from '../../services/adoService';
+
+// Chart colors
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#A28AD3', '#FF99A1'];
+
+interface ChatMessage {
+  sender: string;
+  text: string;
+  timestamp: Date;
+  adoLinks?: string[];
+  autoAssignTags?: string[];
+  autoRemoveTags?: string[];
+  visualType?: 'chart' | 'timeline' | 'pie' | null;
+}
+
+// Helper function to process HTML description
+const processHtmlDescription = (description: string | null | undefined): string => {
+  if (!description || typeof description !== 'string') return '';
+  
+  // Process HTML tags (you can add more complex processing if needed)
+  return description
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+};
+
+// Utility function to create a work item URL
+const createAdoWorkItemUrl = (adoBaseUrl: string, workItemId: string): string => {
+  return `${adoBaseUrl}/_workitems/edit/${workItemId}`;
+};
+
+// Function to make work item IDs clickable
+const makeWorkItemLinksClickable = (text: string, adoBaseUrl: string): string => {
+  if (!text || !adoBaseUrl) return text;
+  
+  // Regex to detect work item mentions like #123 or work item #123
+  const workItemRegex = /(?:work\s+item\s+#|task\s+#|bug\s+#|#)(\d+)|(\b\d{5,}\b)/gi;
+  
+  // Replace matches with clickable links
+  return text.replace(workItemRegex, (match, workItemId1, workItemId2) => {
+    const workItemId = workItemId1 || workItemId2;
+    if (!workItemId) return match;
+    
+    const url = createAdoWorkItemUrl(adoBaseUrl, workItemId);
+    return `<a href="${url}" target="_blank" class="ado-link" data-id="${workItemId}" title="Click to open work item. Ctrl+Click to assign.">${match}</a>`;
+  });
+};
+
+// Function to parse and visually enhance AI responses
+const parseAIResponse = (text: string, teamMembers: TeamMember[], teamCapacity?: TeamCapacity[] | null) => {
+  // Check if this is a team member recommendation response
+  const isRecommendationResponse = text.toLowerCase().includes('recommend') || 
+                                  text.toLowerCase().includes('assign') ||
+                                  text.toLowerCase().includes('suggest') ||
+                                  text.toLowerCase().includes('capacity') ||
+                                  text.toLowerCase().includes('utilization');
+  
+  // Check for other response types
+  const isSprintSummary = text.toLowerCase().includes('sprint') && 
+                         (text.toLowerCase().includes('progress') || text.toLowerCase().includes('burndown'));
+  
+  const isTaskAnalysis = text.toLowerCase().includes('task') || 
+                        text.toLowerCase().includes('work item') ||
+                        text.toLowerCase().includes('#');
+  
+  // Enhanced numerical data detection
+  const percentagePattern = /(\d+(?:\.\d+)?%)/g;
+  const numberPattern = /(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:hours?|days?|points?|tasks?|items?|bugs?|stories?|tickets?)/gi;
+  const chartDataPattern = /(?:chart|graph|visualization|breakdown|distribution|metrics)/i;
+  const tableDataPattern = /(?:table|list|summary|report)\s+(?:of|showing|with)/i;
+  const metricPattern = /(?:velocity|burn.*?rate|completion.*?rate|efficiency|productivity)/i;
+  
+  // Extract percentages and numbers
+  const percentageMatches = text.match(percentagePattern) || [];
+  const percentages = percentageMatches.map(match => match.replace('%', ''));
+  
+  const numberMatches = text.match(numberPattern) || [];
+  const numbers = numberMatches.map(match => ({
+    value: match.replace(/[^\d.,]/g, ''),
+    unit: match.replace(/[\d.,\s]/g, '').trim()
+  }));
+  
+  const hasNumericalData = percentages.length > 0 || numbers.length > 0;
+  const isMetricsResponse = metricPattern.test(text) && hasNumericalData;
+  const isChartData = chartDataPattern.test(text) && hasNumericalData;
+  const isTableData = tableDataPattern.test(text) && numbers.length > 2;
+
+  if (!isRecommendationResponse && !isSprintSummary && !isTaskAnalysis && !isMetricsResponse && !isChartData && !isTableData) {
+    return { 
+      type: 'text', 
+      content: text, 
+      originalText: text,
+      percentages, 
+      numbers, 
+      hasNumericalData 
+    };
+  }
+
+  // Extract team member mentions and their details
+  const memberMentions = [];
+  
+  for (const member of teamMembers) {
+    const memberName = member.displayName;
+    const mentionPattern = new RegExp(`\\b${memberName}\\b`, 'i');
+    
+    if (mentionPattern.test(text)) {
+      // Find capacity info for this member
+      const memberCapacity = teamCapacity?.find(tc => tc.teamMember.id === member.id);
+      
+      // Extract utilization info from the text
+      const utilizationMatch = text.match(new RegExp(`${memberName}.*?(\\d+)%.*?utilization`, 'i'));
+      const capacityMatch = text.match(new RegExp(`${memberName}.*?(\\d+)\\s*hours?.*?remaining`, 'i'));
+      
+      memberMentions.push({
+        member,
+        utilization: utilizationMatch ? parseInt(utilizationMatch[1]) : 0,
+        remainingHours: capacityMatch ? parseInt(capacityMatch[1]) : memberCapacity?.totalAvailableCapacity || 0,
+        totalCapacity: memberCapacity?.totalCapacityForSprint || 0
+      });
+    }
+  }
+
+  if (memberMentions.length > 0) {
+    return { 
+      type: 'recommendation', 
+      content: text,
+      memberMentions,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  // Check for metrics response
+  if (isMetricsResponse) {
+    return { 
+      type: 'metrics', 
+      content: text,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  // Check for chart data response
+  if (isChartData) {
+    return { 
+      type: 'chart_data', 
+      content: text,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  // Check for table data response
+  if (isTableData) {
+    return { 
+      type: 'table_data', 
+      content: text,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  // Check for sprint summary response
+  if (isSprintSummary) {
+    return { 
+      type: 'sprint_summary', 
+      content: text,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  // Check for task analysis response
+  if (isTaskAnalysis) {
+    return { 
+      type: 'task_analysis', 
+      content: text,
+      originalText: text,
+      percentages,
+      numbers,
+      hasNumericalData
+    };
+  }
+  
+  return { 
+    type: 'text', 
+    content: text, 
+    originalText: text,
+    percentages, 
+    numbers, 
+    hasNumericalData 
+  };
+};
+
+// Component to render enhanced AI responses
+const EnhancedAIResponse: React.FC<{
+  message: ChatMessage;
+  teamMembers: TeamMember[];
+  teamCapacity?: TeamCapacity[] | null;
+  adoBaseUrl: string;
+  onAssignTask?: (workItemId: string, memberId: string) => void;
+}> = ({ message, teamMembers, teamCapacity, adoBaseUrl, onAssignTask }) => {
+  const parsedResponse = parseAIResponse(message.text, teamMembers, teamCapacity);
+  
+  // State for assignment dialog
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState<string>('');
+  const [selectedMemberId, setSelectedMemberId] = useState<string>('');
+  
+  // State for success snackbar
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  
+  // Process text to make work item IDs clickable
+  const processedText = useMemo(() => {
+    const htmlText = processHtmlDescription(parsedResponse.originalText || '');
+    return makeWorkItemLinksClickable(htmlText, adoBaseUrl);
+  }, [parsedResponse.originalText, adoBaseUrl]);
+  
+  // Handle click on ADO link
+  const handleAdoLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {    
+    const target = e.target as HTMLElement;
+    
+    // Check if the clicked element is an ADO link
+    if (target.tagName === 'A' && target.classList.contains('ado-link')) {
+      e.preventDefault();
+      
+      // Extract work item ID from the link
+      const workItemId = target.getAttribute('data-id');
+      
+      if (workItemId) {
+        setSelectedWorkItemId(workItemId);
+        setAssignDialogOpen(true);
+      }
+    }
+  };
+  
+  // Handle assignment confirmation
+  const handleAssignConfirm = () => {
+    if (selectedWorkItemId && selectedMemberId && onAssignTask) {
+      // Perform the assignment
+      onAssignTask(selectedWorkItemId, selectedMemberId);
+      
+      // Show success message
+      const selectedMember = teamMembers.find(m => m.id === selectedMemberId);
+      setSnackbarMessage(`Task #${selectedWorkItemId} has been assigned to ${selectedMember?.displayName || selectedMemberId}`);
+      setSnackbarOpen(true);
+      
+      // Close dialog
+      setAssignDialogOpen(false);
+      
+      // Open the ADO link in a new tab
+      const url = createAdoWorkItemUrl(adoBaseUrl, selectedWorkItemId);
+      window.open(url, '_blank');
+    }
+  };
+
+  if (parsedResponse.type === 'recommendation' && parsedResponse.memberMentions) {
+    return (
+      <Box onClick={handleAdoLinkClick}>
+        {/* Original AI text with clickable links */}
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ 
+            whiteSpace: 'pre-wrap',
+            fontSize: '0.95rem',
+            mb: 2 
+          }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+        />
+        
+        {/* Team member capacity cards */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 2 }}>
+          {parsedResponse.memberMentions.map((mention, index) => (
+            <Card key={index} sx={{ mb: 1 }}>
+              <CardContent sx={{ py: 1, px: 2 }}>
+                <Grid container alignItems="center" spacing={1}>
+                  <Grid item xs={3}>
+                    <Typography variant="subtitle2">
+                      {mention.member.displayName}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={9}>
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <Typography variant="body2" sx={{ mr: 2 }}>
+                        Utilization: {mention.utilization}%
+                      </Typography>
+                      <LinearProgress 
+                        variant="determinate" 
+                        value={Math.min(mention.utilization, 100)} 
+                        color={mention.utilization > 90 ? "error" : mention.utilization > 75 ? "warning" : "success"}
+                        sx={{ width: '40%', mr: 2 }}
+                      />
+                      <Typography variant="body2">
+                        {mention.remainingHours} / {mention.totalCapacity} hours remaining
+                      </Typography>
+                    </Box>
+                  </Grid>
+                </Grid>
+              </CardContent>
+            </Card>
+          ))}
+        </Box>
+        
+        {/* Assignment dialog */}
+        <Dialog 
+          open={assignDialogOpen} 
+          onClose={() => setAssignDialogOpen(false)}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Assign Work Item #{selectedWorkItemId}</DialogTitle>
+          <DialogContent>
+            <FormControl fullWidth sx={{ mt: 1 }}>
+              <InputLabel id="assign-member-label">Team Member</InputLabel>
+              <Select
+                labelId="assign-member-label"
+                value={selectedMemberId}
+                label="Team Member"
+                onChange={(e) => setSelectedMemberId(e.target.value as string)}
+              >
+                {teamMembers.map((member) => (
+                  <MenuItem key={member.id} value={member.id}>
+                    {member.displayName}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setAssignDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleAssignConfirm} variant="contained" color="primary">
+              Assign
+            </Button>
+          </DialogActions>
+        </Dialog>
+        
+        {/* Success snackbar */}
+        <Snackbar
+          open={snackbarOpen}
+          autoHideDuration={6000}
+          onClose={() => setSnackbarOpen(false)}
+          message={snackbarMessage}
+          action={
+            <IconButton
+              size="small"
+              color="inherit"
+              onClick={() => setSnackbarOpen(false)}
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          }
+        />
+      </Box>
+    );
+  }
+
+  if (parsedResponse.type === 'sprint_summary') {
+    return (
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>        
+          <AssessmentIcon sx={{ mr: 1, color: 'primary.main' }} />
+          <Typography variant="h6" color="primary">Sprint Summary</Typography>
+        </Box>
+        
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ whiteSpace: 'pre-wrap', fontSize: '0.95rem', mb: 2 }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+        />
+        
+        {/* Data visualization would go here */}
+        {parsedResponse.hasNumericalData && (
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            {parsedResponse.percentages.length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Key Metrics</Typography>
+                <Grid container spacing={2}>
+                  {parsedResponse.percentages.map((percent, idx) => (
+                    <Grid item xs={4} key={idx}>
+                      <Box sx={{ textAlign: 'center', p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                        <Typography variant="h6" color="primary">{percent}%</Typography>
+                        <Typography variant="caption">
+                          {idx === 0 ? 'Completion' : idx === 1 ? 'Efficiency' : 'Progress'}
+                        </Typography>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Box>
+            )}
+            
+            {parsedResponse.numbers.length > 0 && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Sprint Metrics</Typography>
+                <Grid container spacing={2}>
+                  {parsedResponse.numbers.slice(0, 3).map((num, idx) => (
+                    <Grid item xs={4} key={idx}>
+                      <Box sx={{ textAlign: 'center', p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                        <Typography variant="h6" color="primary">{num.value}</Typography>
+                        <Typography variant="caption">{num.unit}</Typography>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+  
+  if (parsedResponse.type === 'task_analysis') {
+    return (
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>        
+          <AssignmentIcon sx={{ mr: 1, color: 'primary.main' }} />
+          <Typography variant="h6" color="primary">Task Analysis</Typography>
+        </Box>
+        
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ whiteSpace: 'pre-wrap', fontSize: '0.95rem', mb: 2 }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+          onClick={handleAdoLinkClick}
+        />
+        
+        {/* Assignment dialog */}
+        <Dialog 
+          open={assignDialogOpen} 
+          onClose={() => setAssignDialogOpen(false)}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Assign Work Item #{selectedWorkItemId}</DialogTitle>
+          <DialogContent>
+            <FormControl fullWidth sx={{ mt: 1 }}>
+              <InputLabel id="assign-member-label">Team Member</InputLabel>
+              <Select
+                labelId="assign-member-label"
+                value={selectedMemberId}
+                label="Team Member"
+                onChange={(e) => setSelectedMemberId(e.target.value as string)}
+              >
+                {teamMembers.map((member) => (
+                  <MenuItem key={member.id} value={member.id}>
+                    {member.displayName}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setAssignDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleAssignConfirm} variant="contained" color="primary">
+              Assign
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </Box>
+    );
+  }
+  
+  // Metrics visualization
+  if (parsedResponse.type === 'metrics') {
+    return (
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>        
+          <TimelineIcon sx={{ mr: 1, color: 'primary.main' }} />
+          <Typography variant="h6" color="primary">Metrics & Analysis</Typography>
+        </Box>
+        
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ whiteSpace: 'pre-wrap', fontSize: '0.95rem', mb: 2 }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+        />
+        
+        {/* Metrics visualization */}
+        {parsedResponse.hasNumericalData && (
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            {parsedResponse.percentages.length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Key Metrics</Typography>
+                <Grid container spacing={2}>
+                  {parsedResponse.percentages.map((percent, idx) => (
+                    <Grid item xs={4} key={idx}>
+                      <Box sx={{ textAlign: 'center', p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                        <Typography variant="h6" color="primary">{percent}%</Typography>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Box>
+            )}
+            
+            {parsedResponse.numbers.length > 0 && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Numerical Data</Typography>
+                <Grid container spacing={2}>
+                  {parsedResponse.numbers.slice(0, 4).map((num, idx) => (
+                    <Grid item xs={3} key={idx}>
+                      <Box sx={{ textAlign: 'center', p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                        <Typography variant="h6" color="primary">{num.value}</Typography>
+                        <Typography variant="caption">{num.unit}</Typography>
+                      </Box>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+  
+  // Chart data visualization
+  if (parsedResponse.type === 'chart_data') {
+    return (
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>        
+          <BarChartIcon sx={{ mr: 1, color: 'primary.main' }} />
+          <Typography variant="h6" color="primary">Chart Data</Typography>
+        </Box>
+        
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ whiteSpace: 'pre-wrap', fontSize: '0.95rem', mb: 2 }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+        />
+        
+        {/* Simple chart visualization */}
+        {parsedResponse.hasNumericalData && (
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>Data Visualization</Typography>
+            
+            {parsedResponse.numbers.length > 0 && (
+              <Box sx={{ height: 200, mt: 2 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={parsedResponse.numbers.map((num, idx) => ({
+                      name: num.unit || `Item ${idx + 1}`,
+                      value: parseFloat(num.value)
+                    }))}
+                    margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Bar dataKey="value" fill="#8884d8" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Box>
+            )}
+            
+            {parsedResponse.percentages.length > 0 && (
+              <Box sx={{ height: 200, mt: 2 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={parsedResponse.percentages.map((percent, idx) => ({
+                        name: `Category ${idx + 1}`,
+                        value: parseFloat(percent)
+                      }))}
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={80}
+                      fill="#8884d8"
+                      dataKey="value"
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    >
+                      {parsedResponse.percentages.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+    );
+  }
+  
+  // Table data visualization
+  if (parsedResponse.type === 'table_data') {
+    return (
+      <Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>        
+          <TableChartIcon sx={{ mr: 1, color: 'primary.main' }} />
+          <Typography variant="h6" color="primary">Table Data</Typography>
+        </Box>
+        
+        <Typography 
+          variant="body1" 
+          component="div"
+          sx={{ whiteSpace: 'pre-wrap', fontSize: '0.95rem', mb: 2 }}
+          dangerouslySetInnerHTML={{ __html: processedText }}
+        />
+        
+        {/* Table visualization */}
+        {parsedResponse.numbers.length > 0 && (
+          <TableContainer component={Paper} sx={{ mt: 2 }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Metric</TableCell>
+                  <TableCell align="right">Value</TableCell>
+                  <TableCell>Unit</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {parsedResponse.numbers.map((num, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell component="th" scope="row">
+                      Item {idx + 1}
+                    </TableCell>
+                    <TableCell align="right">{num.value}</TableCell>
+                    <TableCell>{num.unit}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Box>
+    );
+  }
+  
+  // Default text rendering
+  return (
+    <Typography 
+      variant="body1" 
+      component="div"
+      sx={{ whiteSpace: 'pre-wrap' }}
+      dangerouslySetInnerHTML={{ __html: processedText }}
+      onClick={handleAdoLinkClick}
+    />
+  );
+};
+
+interface CentralizedAgenticChatProps {
+  teamMembers: TeamMember[];
+  teamCapacity?: TeamCapacity[] | null;
+  sprint?: Sprint | null;
+  workItems?: WorkItem[] | null;
+  adoBaseUrl?: string;
+  adoConfig?: any;
+  onAssignTask?: (workItemId: string, memberId: string) => void;
+}
+
+const CentralizedAgenticChat: React.FC<CentralizedAgenticChatProps> = ({
+  teamMembers,
+  teamCapacity,
+  sprint,
+  workItems,
+  adoBaseUrl,
+  adoConfig,
+  onAssignTask
+}) => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [sprintWorkItems, setSprintWorkItems] = useState<WorkItem[]>([]);
+  
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Welcome message
+  useEffect(() => {
+    if (teamMembers.length > 0 && messages.length === 0) {
+      setMessages([{
+        sender: 'AI',
+        text: `👋 Hello! I'm your AI Scrum Assistant. I can help with:
+        
+1️⃣ Sprint analysis and insights
+2️⃣ Work item suggestions and assignments
+3️⃣ Team capacity planning
+4️⃣ Risk assessment for deliverables
+
+How can I help you with your sprint today?`,
+        timestamp: new Date()
+      }]);
+    }
+  }, [teamMembers, messages.length]);
+  
+  // Initialize sprint work items
+  useEffect(() => {
+    if (sprint?.id && adoConfig) {
+      setIsLoading(true);
+      adoService.getSprintWorkItems(sprint.id)
+        .then((items: any[]) => {
+          // Convert items to match the WorkItem type from types.ts
+          const convertedItems = items.map(item => ({
+            ...item,
+            id: item.id.toString()
+          }));
+          setSprintWorkItems(convertedItems as WorkItem[]);
+          setIsLoading(false);
+        })
+        .catch(error => {
+          console.error('Error fetching sprint work items:', error);
+          setIsLoading(false);
+        });
+    } else if (workItems && workItems.length > 0) {
+      setSprintWorkItems(workItems);
+    }
+  }, [sprint, workItems, adoConfig]);
+  
+  // Auto-scroll to the bottom of the chat
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+  
+  // Generate enhanced agentic response
+  const generateAgenticResponse = async (userPrompt: string) => {
+    setIsLoading(true);
+    
+    try {
+      // Construct the prompt with relevant context
+      const contextInfo = {
+        teamMembers,
+        teamCapacity,
+        sprint,
+        workItems: sprintWorkItems
+      };
+      
+      // For demonstration, we'll simulate an API call
+      // In a real app, this would call a proper AI service with the contextInfo
+      
+      // Simulate AI processing time
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Sample responses based on keywords in the user's prompt
+      let aiResponse = '';
+      
+      if (userPrompt.toLowerCase().includes('capacity') || userPrompt.toLowerCase().includes('availability')) {
+        aiResponse = generateCapacityResponse(contextInfo);
+      } else if (userPrompt.toLowerCase().includes('assign') || userPrompt.toLowerCase().includes('task')) {
+        aiResponse = generateAssignmentResponse(contextInfo);
+      } else if (userPrompt.toLowerCase().includes('sprint') || userPrompt.toLowerCase().includes('progress')) {
+        aiResponse = generateSprintAnalysisResponse(contextInfo);
+      } else {
+        aiResponse = "I understand you're looking for assistance. Could you please specify if you need help with capacity planning, task assignments, or sprint analysis?";
+      }
+      
+      // Add the AI response to the chat
+      setMessages(prev => [...prev, {
+        sender: 'AI',
+        text: aiResponse,
+        timestamp: new Date()
+      }]);
+      
+    } catch (error) {
+      console.error('Error generating agentic response:', error);
+      
+      // Add an error message
+      setMessages(prev => [...prev, {
+        sender: 'AI',
+        text: "I'm sorry, I encountered an error while processing your request. Please try again.",
+        timestamp: new Date()
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // Sample response generators
+  const generateCapacityResponse = (context: any) => {
+    const { teamMembers, teamCapacity } = context;
+    
+    // Validate data before proceeding
+    if (!teamMembers || teamMembers.length === 0) {
+      return "I don't have any team member information available. Please ensure your team data is configured correctly.";
+    }
+    
+    let response = "## Team Capacity Analysis\n\n";
+    response += "Here's the current capacity breakdown for your team:\n\n";
+    
+    let hasCapacityData = false;
+    
+    teamMembers.forEach((member: TeamMember) => {
+      // Get display name with fallbacks to handle different data structures
+      const memberName = member.displayName || member.uniqueName || `Team Member ${member.id}`;
+      const memberCapacity = teamCapacity?.find((tc: TeamCapacity) => 
+        tc.teamMember.id === member.id || 
+        tc.teamMember.uniqueName === member.uniqueName
+      );
+      
+      if (memberCapacity) {
+        hasCapacityData = true;
+        const totalCapacity = memberCapacity.totalCapacityForSprint || 0;
+        const usedCapacity = totalCapacity - (memberCapacity.totalAvailableCapacity || 0);
+        const utilizationPercentage = totalCapacity > 0 ? Math.round((usedCapacity / totalCapacity) * 100) : 0;
+        
+        response += `**${memberName}**: ${utilizationPercentage}% utilization (${memberCapacity.totalAvailableCapacity || 0} hours remaining out of ${totalCapacity})\n`;
+      } else {
+        response += `**${memberName}**: No capacity data available\n`;
+      }
+    });
+    
+    if (!hasCapacityData) {
+      response += "\n⚠️ No team capacity data is available. Please make sure capacity is configured for the current sprint.\n";
+    }
+    
+    response += "\nWould you like me to suggest optimal task assignments based on the remaining capacity?";
+    
+    return response;
+  };
+  
+  const generateAssignmentResponse = (context: any) => {
+    const { teamMembers, teamCapacity, workItems } = context;
+    
+    // Validate data before proceeding
+    if (!teamMembers || teamMembers.length === 0) {
+      return "I don't have any team member information available. Please ensure your team data is configured correctly.";
+    }
+    
+    if (!workItems || workItems.length === 0) {
+      return "I don't have any work items to analyze. Please ensure your sprint has work items assigned to it.";
+    }
+    
+    let response = "## Task Assignment Recommendations\n\n";
+    
+    // Find unassigned work items
+    const unassignedItems = workItems.filter((item: WorkItem) => !item.assignedTo) || [];
+    
+    if (unassignedItems.length === 0) {
+      response += "All tasks in the current sprint are already assigned. Would you like me to suggest reassignments to optimize team workload?";
+      return response;
+    }
+    
+    response += `I found ${unassignedItems.length} unassigned tasks in the current sprint. Here are my recommendations:\n\n`;
+    
+    // Sort team members by available capacity (descending)
+    const sortedMembers = [...teamMembers].sort((a, b) => {
+      const aCapacity = teamCapacity?.find((tc: TeamCapacity) => 
+        tc.teamMember.id === a.id || 
+        tc.teamMember.uniqueName === a.uniqueName
+      )?.totalAvailableCapacity || 0;
+      
+      const bCapacity = teamCapacity?.find((tc: TeamCapacity) => 
+        tc.teamMember.id === b.id || 
+        tc.teamMember.uniqueName === b.uniqueName
+      )?.totalAvailableCapacity || 0;
+      
+      return bCapacity - aCapacity;
+    });
+    
+    // Assign tasks based on capacity (simplified algorithm)
+    const assignments: { [key: string]: WorkItem[] } = {};
+    
+    sortedMembers.forEach((member: TeamMember) => {
+      assignments[member.id] = [];
+    });
+    
+    unassignedItems.forEach((item: WorkItem, index: number) => {
+      if (sortedMembers.length > 0) {
+        const memberId = sortedMembers[index % sortedMembers.length].id;
+        assignments[memberId].push(item);
+      }
+    });
+    
+    // Generate response with assignments
+    sortedMembers.forEach((member: TeamMember) => {
+      // Get display name with fallbacks to handle different data structures
+      const memberName = member.displayName || member.uniqueName || `Team Member ${member.id}`;
+      
+      const memberCapacity = teamCapacity?.find((tc: TeamCapacity) => 
+        tc.teamMember.id === member.id || 
+        tc.teamMember.uniqueName === member.uniqueName
+      );
+      
+      const totalCapacity = memberCapacity?.totalCapacityForSprint || 0;
+      const availableCapacity = memberCapacity?.totalAvailableCapacity || 0;
+      const utilizationPercentage = totalCapacity > 0 ? Math.round(((totalCapacity - availableCapacity) / totalCapacity) * 100) : 0;
+      
+      response += `**${memberName}** (${utilizationPercentage}% utilization, ${availableCapacity} hours remaining):\n`;
+      
+      if (!assignments[member.id] || assignments[member.id].length === 0) {
+        response += "- No new task assignments recommended\n\n";
+      } else {
+        assignments[member.id].forEach(item => {
+          const itemPoints = item.storyPoints || item.effort || 'unestimated';
+          response += `- Task #${item.id}: ${item.title} (${itemPoints} points)\n`;
+        });
+        response += "\n";
+      }
+    });
+    
+    response += "Would you like me to implement these assignments? I can update the work items in Azure DevOps for you.";
+    
+    return response;
+  };
+    
+    response += "Would you like me to implement these assignments? I can update the work items in Azure DevOps for you.";
+    
+    return response;
+  };
+  
+  const generateSprintAnalysisResponse = (context: any) => {
+    const { sprint, workItems } = context;
+    
+    if (!sprint || !workItems) {
+      return "I don't have enough information about the current sprint to provide an analysis. Please ensure you have selected an active sprint.";
+    }
+    
+    const totalItems = workItems.length;
+    const completedItems = workItems.filter((item: WorkItem) => item.state === 'Closed' || item.state === 'Done').length;
+    const inProgressItems = workItems.filter((item: WorkItem) => item.state === 'In Progress' || item.state === 'Active').length;
+    const notStartedItems = totalItems - completedItems - inProgressItems;
+    
+    const completionPercentage = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
+    
+    let response = `## Sprint Analysis: ${sprint.name || 'Current Sprint'}\n\n`;
+    
+    // Sprint progress
+    response += "### Sprint Progress\n\n";
+    response += `Your team has completed ${completedItems} out of ${totalItems} items (${completionPercentage}%).\n`;
+    response += `- 🟢 Completed: ${completedItems} items\n`;
+    response += `- 🟠 In Progress: ${inProgressItems} items\n`;
+    response += `- ⚪ Not Started: ${notStartedItems} items\n\n`;
+    
+    // Risk assessment
+    response += "### Risk Assessment\n\n";
+    
+    // Use actual sprint dates for calculations
+    const now = new Date();
+    const sprintStart = sprint.startDate ? new Date(sprint.startDate) : new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); // Default to 1 week ago if no start date
+    const sprintEnd = sprint.endDate ? new Date(sprint.endDate) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // Default to 1 week from now if no end date
+    
+    const totalSprintDays = Math.max(1, Math.ceil((sprintEnd.getTime() - sprintStart.getTime()) / (1000 * 60 * 60 * 24)));
+    const daysElapsed = Math.min(totalSprintDays, Math.max(0, Math.ceil((now.getTime() - sprintStart.getTime()) / (1000 * 60 * 60 * 24))));
+    const daysLeft = Math.max(0, Math.ceil((sprintEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    
+    // Calculate ideal burndown rate based on actual sprint duration
+    const idealBurndownRate = totalItems / totalSprintDays;
+    const currentBurndownRate = daysElapsed > 0 ? completedItems / daysElapsed : 0;
+    
+    response += `Sprint duration: ${totalSprintDays} days total, ${daysElapsed} days elapsed, ${daysLeft} days remaining\n\n`;
+    
+    if (currentBurndownRate < idealBurndownRate) {
+      response += `⚠️ **Warning**: Your team's current velocity (${currentBurndownRate.toFixed(1)} items/day) is below the ideal burndown rate (${idealBurndownRate.toFixed(1)} items/day). At this pace, you may not complete all items by the end of the sprint.\n\n`;
+      
+      // Recommendations
+      response += "### Recommendations\n\n";
+      response += "1. Consider reducing the scope of the sprint by moving less critical items to the next sprint\n";
+      response += "2. Focus on completing in-progress items before starting new ones\n";
+      response += "3. Identify and address any blockers that might be slowing down progress\n";
+    } else {
+      response += `✅ **Good News**: Your team is on track with a velocity of ${currentBurndownRate.toFixed(1)} items/day compared to the required ${idealBurndownRate.toFixed(1)} items/day.\n\n`;
+      
+      // Recommendations
+      response += "### Recommendations\n\n";
+      response += "1. Continue with the current pace and focus\n";
+      response += "2. Consider taking on additional items if capacity allows\n";
+      response += "3. Prepare for the upcoming sprint planning session\n";
+    }
+    
+    return response;
+  };
+  
+  // Handle sending a message
+  const handleSendMessage = () => {
+    if (!inputText.trim()) return;
+    
+    // Add user message to chat
+    const userMessage: ChatMessage = {
+      sender: 'User',
+      text: inputText,
+      timestamp: new Date()
+    };
+    
+    setMessages(prev => [...prev, userMessage]);
+    
+    // Clear input
+    setInputText('');
+    
+    // Generate AI response
+    generateAgenticResponse(inputText);
+  };
+  
+  // Handle pressing Enter in the input field
+  const handleKeyPress = (event: React.KeyboardEvent) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  // Handle assigning a task to a team member
+  const handleAssignTask = async (workItemId: string, memberId: string) => {
+    try {
+      // Find the team member by ID
+      const teamMember = teamMembers.find(member => member.id === memberId);
+      
+      if (!teamMember) {
+        console.error(`Team member with ID ${memberId} not found`);
+        return;
+      }
+      
+      // Find the work item by ID
+      const workItem = sprintWorkItems.find(item => item.id.toString() === workItemId);
+      
+      if (!workItem) {
+        console.error(`Work item with ID ${workItemId} not found`);
+        return;
+      }
+      
+      // Assign the work item to the team member
+      // Make sure we pass a TeamMember object with uniqueName if required by adoService
+      const adoTeamMember = {
+        ...teamMember,
+        uniqueName: teamMember.uniqueName || teamMember.email || teamMember.displayName
+      };
+      
+      await adoService.assignWorkItem(workItemId, adoTeamMember);
+      
+      // Add a confirmation message
+      setMessages(prev => [...prev, {
+        sender: 'AI',
+        text: `I've assigned work item #${workItemId} to ${teamMember.displayName}.`,
+        timestamp: new Date(),
+        visualType: null
+      }]);
+      
+      // Update the sprint work items
+      if (sprint?.id) {
+        const updatedItems = await adoService.getSprintWorkItems(sprint.id);
+        // Convert items to match the WorkItem type from types.ts
+        const convertedItems = updatedItems.map(item => ({
+          ...item,
+          id: item.id.toString()
+        }));
+        setSprintWorkItems(convertedItems as WorkItem[]);
+      }
+
+      // Call the parent component's onAssignTask callback if provided
+      if (onAssignTask) {
+        onAssignTask(workItemId, memberId);
+      }
+    } catch (error) {
+      console.error('Error assigning work item:', error);
+      setMessages(prev => [...prev, {
+        sender: 'AI',
+        text: `Sorry, I couldn't assign work item #${workItemId}. Please try again or assign it manually.`,
+        timestamp: new Date(),
+        visualType: null
+      }]);
+    }
+  };
+
+  // Render the component
+  return (
+    <Box sx={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100%', 
+      p: 2,
+      bgcolor: 'background.paper',
+      borderRadius: 1
+    }}>
+      {/* Chat header */}
+      <Box sx={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        mb: 2, 
+        p: 1, 
+        borderBottom: '1px solid',
+        borderColor: 'divider'
+      }}>
+        <SmartToyIcon sx={{ mr: 1, color: 'primary.main' }} />
+        <Typography variant="h6" color="primary">AI Scrum Assistant</Typography>
+        {sprint && (
+          <Typography variant="body2" sx={{ ml: 'auto', color: 'text.secondary' }}>
+            Sprint: {sprint.name}
+          </Typography>
+        )}
+      </Box>
+      
+      {/* Chat messages */}
+      <Box 
+        ref={chatContainerRef}
+        sx={{ 
+          flexGrow: 1, 
+          overflowY: 'auto', 
+          mb: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+          p: 1
+        }}
+      >
+        {messages.map((message, index) => (
+          <Box 
+            key={index}
+            sx={{ 
+              display: 'flex',
+              flexDirection: 'column',
+              alignSelf: message.sender === 'User' ? 'flex-end' : 'flex-start',
+              maxWidth: '80%'
+            }}
+          >
+            {/* Message header */}
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              mb: 0.5,
+              pl: message.sender === 'User' ? 0 : 1,
+              pr: message.sender === 'User' ? 1 : 0,
+            }}>
+              {message.sender !== 'User' && (
+                <Avatar 
+                  sx={{ 
+                    width: 24, 
+                    height: 24, 
+                    mr: 1,
+                    bgcolor: 'primary.main'
+                  }}
+                >
+                  <SmartToyIcon sx={{ fontSize: 16 }} />
+                </Avatar>
+              )}
+              <Typography variant="caption" color="text.secondary">
+                {message.sender}
+              </Typography>
+              {message.sender === 'User' && (
+                <Avatar 
+                  sx={{ 
+                    width: 24, 
+                    height: 24, 
+                    ml: 1,
+                    bgcolor: 'secondary.main'
+                  }}
+                >
+                  <Typography variant="caption">U</Typography>
+                </Avatar>
+              )}
+            </Box>
+            
+            {/* Message content */}
+            <Box sx={{ 
+              bgcolor: message.sender === 'User' ? 'secondary.light' : 'background.default',
+              color: message.sender === 'User' ? 'secondary.contrastText' : 'text.primary',
+              borderRadius: 2,
+              p: 1.5,
+              boxShadow: 1
+            }}>
+              {message.sender === 'User' ? (
+                <Typography variant="body1">{message.text}</Typography>
+              ) : (
+                <EnhancedAIResponse 
+                  message={message} 
+                  teamMembers={teamMembers}
+                  teamCapacity={teamCapacity}
+                  adoBaseUrl={adoBaseUrl || ''}
+                  onAssignTask={handleAssignTask}
+                />
+              )}
+            </Box>
+            
+            {/* Message timestamp */}
+            <Typography 
+              variant="caption" 
+              color="text.secondary"
+              sx={{ 
+                alignSelf: message.sender === 'User' ? 'flex-end' : 'flex-start',
+                mt: 0.5,
+                px: 1
+              }}
+            >
+              {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Typography>
+          </Box>
+        ))}
+        
+        {/* Loading indicator */}
+        {isLoading && (
+          <Box sx={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-start', ml: 2 }}>
+            <CircularProgress size={20} sx={{ mr: 1 }} />
+            <Typography variant="body2">AI is thinking...</Typography>
+          </Box>
+        )}
+      </Box>
+      
+      {/* Input area */}
+      <Box sx={{ 
+        display: 'flex', 
+        gap: 1,
+        p: 1,
+        borderTop: '1px solid',
+        borderColor: 'divider'
+      }}>
+        <TextField
+          fullWidth
+          variant="outlined"
+          placeholder="Ask about your sprint, team capacity, or task assignments..."
+          value={inputText}
+          onChange={(e) => setInputText(e.target.value)}
+          onKeyPress={handleKeyPress}
+          multiline
+          rows={1}
+          maxRows={4}
+          size="small"
+          disabled={isLoading}
+        />
+        <Button
+          variant="contained"
+          color="primary"
+          endIcon={<SendIcon />}
+          onClick={handleSendMessage}
+          disabled={isLoading || !inputText.trim()}
+        >
+          Send
+        </Button>
+      </Box>
+    </Box>
+  );
+};
+
+export default CentralizedAgenticChat;

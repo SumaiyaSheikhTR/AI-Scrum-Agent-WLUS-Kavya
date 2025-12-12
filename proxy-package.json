@@ -1,0 +1,18 @@
+{
+  "name": "tr-openai-cors-proxy",
+  "version": "1.0.0",
+  "description": "CORS proxy server for Thomson Reuters OpenAI API",
+  "main": "cors-proxy-server.js",
+  "scripts": {
+    "proxy": "node cors-proxy-server.js",
+    "start-proxy": "node cors-proxy-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "keywords": ["proxy", "cors", "thomson-reuters", "openai"],
+  "author": "AI Scrum Agent",
+  "license": "ISC"
+}

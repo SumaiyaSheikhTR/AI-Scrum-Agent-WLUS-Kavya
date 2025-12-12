@@ -1,0 +1,1278 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+import Paper from '@mui/material/Paper';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import FormControl from '@mui/material/FormControl';
+import InputLabel from '@mui/material/InputLabel';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import Button from '@mui/material/Button';
+import Alert from '@mui/material/Alert';
+import AlertTitle from '@mui/material/AlertTitle';
+import Chip from '@mui/material/Chip';
+import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import InfoIcon from '@mui/icons-material/Info';
+import CommentIcon from '@mui/icons-material/Comment';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import WarningIcon from '@mui/icons-material/Warning';
+import BugReportIcon from '@mui/icons-material/BugReport';
+import TaskIcon from '@mui/icons-material/Task';
+import Tooltip from '@mui/material/Tooltip';
+import PersonIcon from '@mui/icons-material/Person';
+import { CircularProgress, LinearProgress } from '@mui/material';
+import { useAdoContext } from '../../contexts/AdoContext';
+import { useSprint } from '../../hooks/useSprint';
+import { WorkItem, WorkItemComment } from '../../types';
+import adoService from '../../services/adoService';
+
+interface TaskActivity {
+  id: string;
+  title: string;
+  type: string;
+  state: string;
+  assignedTo: string;
+  activatedDate?: string;
+  completedDate?: string;
+  updatedDate?: string;
+  hasRecentCommentOnParent: boolean;
+  parentCommentCount: number;
+  lastParentCommentDate?: string;
+  daysSinceActivation: number;
+  daysSinceCompletion?: number;
+  isViolation: boolean;
+  violationType?: 'missing_activation_comment' | 'missing_completion_comment' | 'stale_item' | 'missing_user_story_comments';
+  parentComments?: WorkItemComment[];
+}
+
+interface StoryBugActivity {
+  parentWorkItem: WorkItem;
+  activeTasks: TaskActivity[];
+  completedTasks: TaskActivity[];
+  totalTasks: number;
+  violationCount: number;
+  complianceScore: number;
+  parentComments: WorkItemComment[];
+}
+
+interface TagCategory {
+  tag: string;
+  storyBugs: StoryBugActivity[];
+}
+
+const ActivityMonitoringPanel: React.FC = () => {
+  const { config } = useAdoContext();
+  const { sprints, currentSprint, loading: sprintsLoading } = useSprint();
+  
+  const [selectedSprintId, setSelectedSprintId] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [storyBugActivities, setStoryBugActivities] = useState<StoryBugActivity[]>([]);
+  const [tagCategories, setTagCategories] = useState<TagCategory[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
+  const [selectedStoryBug, setSelectedStoryBug] = useState<StoryBugActivity | null>(null);
+  
+  useEffect(() => {
+    if (currentSprint && !selectedSprintId) {
+      setSelectedSprintId(currentSprint.id.toString());
+    }
+  }, [currentSprint, selectedSprintId]);
+  
+  const analyzeActivityComments = useCallback(async () => {
+    if (!selectedSprintId || !config) {
+      setError('No sprint selected or ADO configuration is missing');
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      console.log('📊 ACTIVITY_MONITORING: Starting activity monitoring analysis...');
+      console.log(`📊 ACTIVITY_MONITORING: Analyzing sprint ID: ${selectedSprintId}`);
+      
+      // Get all work items in the sprint
+      const allWorkItems = await adoService.getWorkItemsForSprint(parseInt(selectedSprintId));
+      console.log(`📊 ACTIVITY_MONITORING: Found ${allWorkItems.length} total work items`);
+      
+      if (allWorkItems.length === 0) {
+        console.warn('📊 ACTIVITY_MONITORING: No work items found in sprint');
+        setStoryBugActivities([]);
+        setError('No work items found in the selected sprint. Please check if the sprint has work items assigned.');
+        return;
+      }
+      
+      // Separate parent items (User Stories, Bugs, Features) from child items (Tasks)
+      const parentItems = allWorkItems.filter(item => 
+        item.type === 'User Story' || 
+        item.type === 'Bug' || 
+        item.type === 'Feature' || 
+        item.type === 'Epic'
+      );
+      
+      const childTasks = allWorkItems.filter(item => 
+        item.type === 'Task' && item.parentId
+      );
+      
+      console.log(`📊 ACTIVITY_MONITORING: Found ${parentItems.length} parent items (Stories/Bugs/Features)`);
+      console.log(`📊 ACTIVITY_MONITORING: Found ${childTasks.length} child tasks`);
+      
+      if (parentItems.length === 0) {
+        console.warn('📊 ACTIVITY_MONITORING: No parent work items (Stories/Bugs) found');
+        setStoryBugActivities([]);
+        setError('No User Stories, Bugs, or Features found in the selected sprint.');
+        return;
+      }
+      
+      // Analyze each parent work item and its child tasks
+      const activities: StoryBugActivity[] = [];
+      
+      for (const parentItem of parentItems) {
+        console.log(`📊 ACTIVITY_MONITORING: Analyzing ${parentItem.type}: ${parentItem.title}`);
+        
+        // Get child tasks for this parent
+        const parentTasks = childTasks.filter(task => task.parentId === parentItem.id);
+        console.log(`📊 ACTIVITY_MONITORING: Found ${parentTasks.length} tasks for ${parentItem.title}`);
+        
+        if (parentTasks.length === 0) {
+          console.log(`📊 ACTIVITY_MONITORING: No tasks found for ${parentItem.title}, skipping...`);
+          continue;
+        }
+        
+        // Get comments for the parent work item
+        const parentComments = await adoService.getWorkItemComments(parentItem.id, parentItem.title);
+        console.log(`📊 ACTIVITY_MONITORING: Found ${parentComments.length} comments on parent ${parentItem.title}`);
+        
+        // Filter out automated comments for display purposes
+        const nonAutomatedParentComments = parentComments.filter(comment => {
+          // Skip only very specific automated system comments
+          if (comment.text && (
+            comment.text.includes('Changed to Active from team automation rules triggered by') ||
+            comment.text.includes('system generated') ||
+            comment.text.includes('Auto-generated') ||
+            (comment.text.startsWith('Moved from') && comment.text.includes('to')) ||
+            (comment.text.startsWith('State changed from') && comment.text.includes('to'))
+          )) {
+            return false;
+          }
+          return true; // Keep all non-automated comments
+        });
+        
+        console.log(`📊 ACTIVITY_MONITORING: After filtering, found ${nonAutomatedParentComments.length} non-automated comments on parent ${parentItem.title}`);
+        
+        const activeTasks: TaskActivity[] = [];
+        const completedTasks: TaskActivity[] = [];
+        
+        for (const task of parentTasks) {
+          const taskActivity = await analyzeTask(task, parentComments);
+          
+          if (taskActivity.state === 'In Progress' || taskActivity.state === 'Active') {
+            activeTasks.push(taskActivity);
+          } else if (taskActivity.state === 'Completed' || taskActivity.state === 'Done' || taskActivity.state === 'Closed') {
+            completedTasks.push(taskActivity);
+          }
+        }
+        
+        // Calculate compliance score for this parent item
+        const totalTasks = activeTasks.length + completedTasks.length;
+        const violationCount = [...activeTasks, ...completedTasks].filter(task => task.isViolation).length;
+        const complianceScore = totalTasks > 0 ? Math.round(((totalTasks - violationCount) / totalTasks) * 100) : 100;
+        
+        if (totalTasks > 0) {
+          activities.push({
+            parentWorkItem: parentItem,
+            activeTasks,
+            completedTasks,
+            totalTasks,
+            violationCount,
+            complianceScore,
+            parentComments: nonAutomatedParentComments  // Use filtered comments instead of all comments
+          });
+          
+          console.log(`📊 ACTIVITY_MONITORING: ${parentItem.title} - ${totalTasks} tasks, ${violationCount} violations, ${complianceScore}% compliance, ${nonAutomatedParentComments.length} non-automated comments`);
+        }
+      }
+      
+      setStoryBugActivities(activities);
+      
+      // Categorize stories/bugs by specific tags (DELIVERY, SMARTBROWSE-APP)
+      const categoriesByTag = new Map<string, StoryBugActivity[]>();
+      
+      // Add the specific categories we want to display
+      categoriesByTag.set("DELIVERY", []);
+      categoriesByTag.set("SMART BROWSE", []);  // Changed to match the screenshot (with space)
+      categoriesByTag.set("OTHER", []);
+      
+      // Process each story/bug and add it to the appropriate category
+      activities.forEach(storyBug => {
+        let matched = false;
+        
+        if (storyBug.parentWorkItem.tags) {
+          const tags = storyBug.parentWorkItem.tags;
+          
+          // Check if story/bug has DELIVERY tag
+          if (tags.some(tag => tag.toUpperCase().includes('DELIVERY'))) {
+            const deliveryStories = categoriesByTag.get("DELIVERY") || [];
+            deliveryStories.push(storyBug);
+            categoriesByTag.set("DELIVERY", deliveryStories);
+            matched = true;
+          }
+          
+          // Check if story/bug has SMARTBROWSE-APP tag
+          if (tags.some(tag => 
+            tag.toUpperCase().includes('SMART BROWSE') || 
+            tag.toUpperCase().includes('SMARTBROWSE')
+          )) {
+            const smartBrowseStories = categoriesByTag.get("SMART BROWSE") || [];
+            smartBrowseStories.push(storyBug);
+            categoriesByTag.set("SMART BROWSE", smartBrowseStories);
+            matched = true;
+          }
+        }
+        
+        // If the story/bug didn't match any specific category, add it to OTHER
+        if (!matched) {
+          const otherStories = categoriesByTag.get("OTHER") || [];
+          otherStories.push(storyBug);
+          categoriesByTag.set("OTHER", otherStories);
+        }
+      });
+      
+      // Convert Map to array for easier rendering
+      const categories: TagCategory[] = [];
+      
+      categoriesByTag.forEach((storyBugs, tag) => {
+        // Only include categories that have items
+        if (storyBugs.length > 0) {
+          categories.push({
+            tag,
+            storyBugs
+          });
+        }
+      });
+      
+      setTagCategories(categories);
+      
+    } catch (error) {
+      console.error('Error analyzing activity comments:', error);
+      setError('Failed to analyze activity comments. Please try again later.');
+    } finally {
+      setIsLoading(false);
+      console.log('📊 ===============================================================');
+    }
+  }, [selectedSprintId, config]);
+
+  const analyzeTask = async (task: WorkItem, parentComments: WorkItemComment[]): Promise<TaskActivity> => {
+    console.log(`🔍 Analyzing task: ${task.title} assigned to: ${task.assignedTo}`);
+    
+    try {
+      // Determine activation and completion dates
+      const activatedDate = getActivationDate(task);
+      const completedDate = getCompletionDate(task);
+      
+      // Filter out automated comments but include ALL team member comments 
+      // This is a more lenient approach that shows all relevant comments
+      const userComments = parentComments.filter(comment => {
+        // Skip only very specific automated system comments
+        if (comment.text && (
+          comment.text.includes('Changed to Active from team automation rules triggered by') ||
+          comment.text.includes('system generated') ||
+          comment.text.includes('Auto-generated') ||
+          (comment.text.startsWith('Moved from') && comment.text.includes('to')) ||
+          (comment.text.startsWith('State changed from') && comment.text.includes('to'))
+        )) {
+          return false;
+        }
+        
+        // Accept all non-automated comments from any team member on the parent User Story/Bug
+        return true;
+      });
+      
+      console.log(`🔍 ${task.title}: Found ${userComments.length} comments on parent out of ${parentComments.length} total comments`);
+      
+      // Check for recent comments on parent User Story/Bug (not on child tasks)
+      const hasRecentCommentOnParent = checkForRecentCommentsOnParent(
+        parentComments, 
+        task.assignedTo || 'Unassigned',
+        activatedDate, 
+        completedDate
+      );
+      
+      // Check if the task is in a state we need to analyze
+      // Calculate days since activation/completion
+      const daysSinceActivation = activatedDate ? 
+        Math.floor((Date.now() - new Date(activatedDate).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+      
+      const daysSinceCompletion = completedDate ? 
+        Math.floor((Date.now() - new Date(completedDate).getTime()) / (1000 * 60 * 60 * 24)) : undefined;
+      
+      // Calculate task properties for checking requirements
+      const isAssigned = task.assignedTo && task.assignedTo !== 'Unassigned';
+      const isActive = task.state === 'In Progress' || task.state === 'Active';
+      const isCompleted = task.state === 'Completed' || task.state === 'Done';
+      const isNew = task.state === 'New' || task.state === 'To Do' || task.state === 'Proposed';
+      const isClosed = task.state === 'Closed' || task.state === 'Resolved' || task.state === 'Removed';
+      
+      console.log(`🔍 ${task.title}: Parent story has ${userComments.length} non-automated comments`);
+      
+      // Skip full analysis for tasks that are New or Closed - they don't have active requirements
+      if (isNew || isClosed) {
+        return {
+          id: task.id.toString(),
+          title: task.title,
+          type: task.type,
+          state: task.state,
+          assignedTo: task.assignedTo || 'Unassigned',
+          activatedDate,
+          completedDate,
+          updatedDate: task.updatedDate,
+          hasRecentCommentOnParent,
+          parentCommentCount: userComments.length,
+          lastParentCommentDate: userComments.length > 0 ? userComments[0].timestamp : undefined,
+          daysSinceActivation,
+          daysSinceCompletion,
+          isViolation: false, // New and closed tasks are never violations
+          parentComments: userComments
+        };
+      }
+      let isViolation = false;
+      let violationType: TaskActivity['violationType'];
+      
+      // Check if the task was updated recently (in the last 3 days)
+      const taskUpdateDate = new Date(task.updatedDate);
+      const currentDate = new Date();
+      const daysSinceUpdate = Math.floor((currentDate.getTime() - taskUpdateDate.getTime()) / (1000 * 60 * 60 * 24));
+      const isRecentlyUpdated = daysSinceUpdate <= 3;
+      
+      console.log(`🔍 ${task.title}: Days since last update: ${daysSinceUpdate}, Recently updated: ${isRecentlyUpdated}`);
+      
+      // CRITICAL: Focus only on Parent User Story/Bug level comments
+      // Check if the assigned team member has commented on the parent work item
+      // for active/completed tasks
+      
+      // Reset violation flags
+      isViolation = false;
+      
+      // Only check violations for assigned tasks that are active or completed
+      if (isAssigned && (isActive || isCompleted)) {
+        
+        console.log(`🔍 CRITICAL CHECK: Task "${task.title}" assigned to "${task.assignedTo}" - State: ${task.state}`);
+        
+        // REQUIREMENT: Active tasks must have a parent comment within 3 days
+        // Check if there's a recent comment on the parent within 3 days of the task's last update
+        const taskUpdateDate = new Date(task.updatedDate);
+        
+        // If task was updated in the last 3 days
+        if (isRecentlyUpdated) {
+          // Find the most recent comment date on the parent User Story/Bug
+          let mostRecentCommentDate: Date | null = null;
+          for (const comment of userComments) {
+            const commentDate = new Date(comment.timestamp);
+            if (!mostRecentCommentDate || commentDate > mostRecentCommentDate) {
+              mostRecentCommentDate = commentDate;
+            }
+          }
+          
+          // If we have a comment on the parent, check if it's within 3 days of the task update
+          if (mostRecentCommentDate) {
+            const daysBetweenUpdateAndComment = Math.abs(
+              Math.floor((taskUpdateDate.getTime() - mostRecentCommentDate.getTime()) / (1000 * 60 * 60 * 24))
+            );
+            
+            if (daysBetweenUpdateAndComment <= 3) {
+              // Task has a parent comment within 3 days of its update - compliant
+              isViolation = false;
+              console.log(`✅ COMPLIANT: Task "${task.title}" has a parent comment within 3 days of its update`);
+            } else {
+              // Task doesn't have a recent enough parent comment
+              isViolation = true;
+              violationType = 'missing_user_story_comments';
+              console.log(`🚨 VIOLATION: Task "${task.title}" assigned to "${task.assignedTo}" - latest comment on parent is ${daysBetweenUpdateAndComment} days from update, exceeding 3-day limit!`);
+            }
+          } else {
+            // No comments at all on parent User Story/Bug
+            isViolation = true;
+            violationType = 'missing_user_story_comments';
+            console.log(`🚨 VIOLATION: Task "${task.title}" assigned to "${task.assignedTo}" has NO comments on parent User Story/Bug!`);
+          }
+        } else {
+          // Task wasn't updated recently, so we're not as strict about comment timing
+          if (userComments.length === 0) {
+            isViolation = true;
+            violationType = 'missing_user_story_comments';
+            console.log(`🚨 VIOLATION: Task "${task.title}" assigned to "${task.assignedTo}" has NO comments on parent User Story/Bug!`);
+          } else {
+            console.log(`✅ COMPLIANT: Task "${task.title}" assigned to "${task.assignedTo}" has ${userComments.length} comment(s) on parent User Story/Bug`);
+          }
+        }
+      
+        // REQUIREMENT: Parent Work Item must have comments if there are any 
+        // active/completed tasks
+        if (userComments.length === 0) {
+          console.log(`🚨 PARENT VIOLATION: Parent "${parentComments[0]?.workItemTitle || 'Unknown'}" has NO comments but has active/completed tasks!`);
+          // This will be flagged at the parent level, not task level
+        }
+      }
+      
+      const taskActivity: TaskActivity = {
+        id: task.id.toString(),
+        title: task.title,
+        type: task.type,
+        state: task.state,
+        assignedTo: task.assignedTo || 'Unassigned',
+        activatedDate,
+        completedDate,
+        updatedDate: task.updatedDate,
+        hasRecentCommentOnParent,
+        parentCommentCount: userComments.length, // Show all team member comments (excluding automation)
+        lastParentCommentDate: userComments.length > 0 ? 
+          userComments.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0].timestamp :
+          undefined,
+        daysSinceActivation,
+        daysSinceCompletion,
+        isViolation: isViolation,
+        violationType: violationType,
+        parentComments: userComments
+      };
+      
+      return taskActivity;
+    } catch (error) {
+      console.error(`Error analyzing task ${task.title}:`, error);
+      return {
+        id: task.id.toString(),
+        title: task.title,
+        type: task.type,
+        state: task.state,
+        assignedTo: task.assignedTo || 'Unassigned',
+        updatedDate: task.updatedDate,
+        hasRecentCommentOnParent: false,
+        parentCommentCount: 0,
+        daysSinceActivation: 0,
+        isViolation: false,
+        parentComments: []
+      };
+    }
+  };
+
+  const checkForRecentCommentsOnParent = (
+    comments: WorkItemComment[], 
+    assignedUser: string,
+    activatedDate?: string, 
+    completedDate?: string
+  ): boolean => {
+    if (comments.length === 0 || !assignedUser || assignedUser === 'Unassigned') return false;
+    
+    // Get all non-automated comments on the parent User Story/Bug
+    const parentComments = comments.filter(comment => {
+      // Skip only very specific automated system comments
+      if (comment.text && (
+        comment.text.includes('Changed to Active from team automation rules triggered by') ||
+        comment.text.includes('system generated') ||
+        comment.text.includes('Auto-generated') ||
+        (comment.text.startsWith('Moved from') && comment.text.includes('to')) ||
+        (comment.text.startsWith('State changed from') && comment.text.includes('to'))
+      )) {
+        return false;
+      }
+      
+      return true; // Keep all non-automated comments on the parent work item
+    });
+    
+    // Now we check for the latest comments on the parent (not matching to specific users)
+    console.log(`🔍 checkForRecentCommentsOnParent: ${parentComments.length} non-automated comments found on parent User Story/Bug`);
+    
+    if (parentComments.length === 0) return false;
+    
+    // First check: If there are a significant number of comments (3+), we can assume active communication
+    if (parentComments.length >= 3) {
+      console.log(`🔍 Found ${parentComments.length} comments on parent User Story/Bug - considering compliant based on volume`);
+      return true;
+    }
+    
+    // Second check: Check for comments within +/- 3 days of activation or completion
+    // We're specifically looking at the parent User Story/Bug comments
+    if (activatedDate) {
+      const activationDate = new Date(activatedDate);
+      const hasRecentComment = parentComments.some(comment => {
+        const commentDate = new Date(comment.timestamp);
+        const daysBetween = Math.abs(
+          Math.floor((activationDate.getTime() - commentDate.getTime()) / (1000 * 60 * 60 * 24))
+        );
+        return daysBetween <= 3;
+      });
+      
+      if (hasRecentComment) {
+        console.log(`🔍 Found comment on parent User Story/Bug within 3 days of task activation (${activatedDate})`);
+        return true;
+      }
+    }
+    
+    if (completedDate) {
+      const completionDate = new Date(completedDate);
+      const hasRecentComment = parentComments.some(comment => {
+        const commentDate = new Date(comment.timestamp);
+        const daysBetween = Math.abs(
+          Math.floor((completionDate.getTime() - commentDate.getTime()) / (1000 * 60 * 60 * 24))
+        );
+        return daysBetween <= 3;
+      });
+      
+      if (hasRecentComment) {
+        console.log(`🔍 Found comment on parent User Story/Bug within 3 days of task completion (${completedDate})`);
+        return true;
+      }
+    }
+    
+    // If neither activation nor completion date has a comment but there are some comments,
+    // consider it compliant if the task was just activated recently (within last 2 days)
+    if (activatedDate) {
+      const activationDate = new Date(activatedDate);
+      const now = new Date();
+      const daysSinceActivation = Math.floor((now.getTime() - activationDate.getTime()) / (1000 * 60 * 60 * 24));
+      
+      if (daysSinceActivation <= 2) {
+        console.log(`🔍 Task was just activated ${daysSinceActivation} days ago, considering compliant for now`);
+        return true;
+      }
+    }
+    
+    return false;
+  };
+
+  const getActivationDate = (workItem: WorkItem): string | undefined => {
+    if (workItem.activatedDate) return workItem.activatedDate;
+    
+    // Check if there's a created date (fallback)
+    if (workItem.createdDate) return workItem.createdDate;
+    
+    return undefined;
+  };
+
+  const getCompletionDate = (workItem: WorkItem): string | undefined => {
+    if (workItem.closedDate) return workItem.closedDate;
+    if (workItem.completedDate) return workItem.completedDate;
+    
+    return undefined;
+  };
+
+  const getLatestDate = (item: WorkItem): string | undefined => {
+    // Find the latest date among created, updated, activated, and completed dates
+    const dates = [
+      item.createdDate ? new Date(item.createdDate).getTime() : 0,
+      item.updatedDate ? new Date(item.updatedDate).getTime() : 0,
+      item.activatedDate ? new Date(item.activatedDate).getTime() : 0,
+      item.completedDate ? new Date(item.completedDate).getTime() : 0,
+      item.closedDate ? new Date(item.closedDate).getTime() : 0
+    ].filter(date => date > 0);
+    
+    if (dates.length === 0) return undefined;
+    
+    const latestTimestamp = Math.max(...dates);
+    
+    if (item.closedDate && new Date(item.closedDate).getTime() === latestTimestamp) {
+      return item.closedDate;
+    }
+    if (item.completedDate && new Date(item.completedDate).getTime() === latestTimestamp) {
+      return item.completedDate;
+    }
+    if (item.activatedDate && new Date(item.activatedDate).getTime() === latestTimestamp) {
+      return item.activatedDate;
+    }
+    if (item.updatedDate && new Date(item.updatedDate).getTime() === latestTimestamp) {
+      return item.updatedDate;
+    }
+    if (item.createdDate && new Date(item.createdDate).getTime() === latestTimestamp) {
+      return item.createdDate;
+    }
+    return undefined;
+  };
+
+  // Function to determine if a parent work item needs comments based on its tasks
+  const parentRequiresComments = (storyBug: StoryBugActivity): boolean => {
+    // Check if ANY active or completed tasks were updated in the last 3 days
+    // Only consider In Progress, Active, Completed, and Done states (NOT New, Closed, or Resolved)
+    const hasChildTasksNeedingComments = [...storyBug.activeTasks, ...storyBug.completedTasks].some(task => {
+      // Only consider proper states - EXPLICITLY exclude New and Closed states
+      const isActive = task.state === 'In Progress' || task.state === 'Active';
+      const isCompleted = task.state === 'Completed' || task.state === 'Done';
+      const isNew = task.state === 'New' || task.state === 'To Do' || task.state === 'Proposed';
+      const isClosed = task.state === 'Closed' || task.state === 'Resolved' || task.state === 'Removed';
+      
+      // Skip the task if it's New or Closed
+      if (isNew || isClosed) {
+        console.log(`🔍 Parent comment check: Skipping task ${task.title} - state ${task.state} is New or Closed`);
+        return false;
+      }
+      
+      // Also skip if not Active or Completed
+      if (!(isActive || isCompleted)) {
+        return false;
+      }
+      
+      // Calculate days since update
+      const taskUpdateDate = new Date(task.updatedDate || new Date());
+      const now = new Date();
+      const daysSinceUpdate = Math.floor((now.getTime() - taskUpdateDate.getTime()) / (1000 * 60 * 60 * 24));
+      
+      // We want to check if a task was updated in the last 3 days
+      const isRecentlyUpdated = daysSinceUpdate <= 3;
+      
+      // If task was updated recently, check for parent comments within 3 days of the update
+      if (isRecentlyUpdated) {
+        console.log(`🔍 Task ${task.title} was updated ${daysSinceUpdate} days ago`);
+        
+        // Find the most recent comment date
+        let mostRecentCommentDate: Date | null = null;
+        for (const comment of storyBug.parentComments) {
+          const commentDate = new Date(comment.timestamp);
+          if (!mostRecentCommentDate || commentDate > mostRecentCommentDate) {
+            mostRecentCommentDate = commentDate;
+          }
+        }
+        
+        // If no comments on parent, task needs a comment
+        if (!mostRecentCommentDate) {
+          console.log(`🔍 No comments found on parent for recently updated task ${task.title}`);
+          return true;
+        }
+        
+        // Calculate days between task update and most recent comment
+        const daysBetweenUpdateAndComment = Math.floor((taskUpdateDate.getTime() - mostRecentCommentDate.getTime()) / (1000 * 60 * 60 * 24));
+        
+        console.log(`🔍 Days between task update and most recent comment: ${daysBetweenUpdateAndComment} (negative means comment is after task update)`);
+        
+        // If comment is within 3 days before or after the task update, it's compliant
+        if (Math.abs(daysBetweenUpdateAndComment) <= 3) {
+          console.log(`✅ Task ${task.title} has a parent comment within 3 days of its update`);
+          return false;
+        }
+      }
+      
+      // If we get here, this task needs a parent comment
+      console.log(`❌ Task ${task.title} needs a parent comment within 3 days of its update`);
+      return true;
+    });
+    
+    // Check if parent has any non-automated comments
+    const hasNonAutomatedComments = storyBug.parentComments.some(comment => {
+      // Skip only very specific automated system comments
+      return !(comment.text && (
+        comment.text.includes('Changed to Active from team automation rules triggered by') ||
+        comment.text.includes('system generated') ||
+        comment.text.includes('Auto-generated') ||
+        (comment.text.startsWith('Moved from') && comment.text.includes('to')) ||
+        (comment.text.startsWith('State changed from') && comment.text.includes('to'))
+      ));
+    });
+    
+    const needsComments = hasChildTasksNeedingComments && !hasNonAutomatedComments;
+    
+    if (needsComments) {
+      console.log(`🚨 Parent "${storyBug.parentWorkItem.title}" requires comments but has none!`);
+    }
+    
+    return needsComments;
+  };
+
+  const showStoryBugDetails = (storyBug: StoryBugActivity) => {
+    console.log(`🔍 Viewing details for ${storyBug.parentWorkItem.type}: ${storyBug.parentWorkItem.title}`);
+    
+    // Debug task counts
+    console.log(`${storyBug.activeTasks.length} active tasks, ${storyBug.completedTasks.length} completed tasks`);
+    
+    // Log compliance score calculation
+    console.log(`Compliance Score: ${storyBug.complianceScore}% (${storyBug.totalTasks - storyBug.violationCount} compliant tasks out of ${storyBug.totalTasks} total)`);
+    
+    // Debug task violations
+    const allViolations = [...storyBug.activeTasks, ...storyBug.completedTasks]
+      .filter(task => task.isViolation)
+      .map(task => `${task.title} (${task.violationType})`);
+    
+    console.log(`Tasks with violations (${allViolations.length}):`, allViolations);
+    
+    // Log assigned users and their comments
+    const userCommentCounts = [...storyBug.activeTasks, ...storyBug.completedTasks]
+      .map(task => ({ 
+        task: task.title, 
+        assignedTo: task.assignedTo, 
+        commentsCount: task.parentCommentCount,
+        isViolation: task.isViolation,
+        violationType: task.violationType
+      }));
+    
+    console.log('User comment stats:', userCommentCounts);
+    
+    setSelectedStoryBug(storyBug);
+    setDetailsOpen(true);
+  };
+
+  useEffect(() => {
+    if (selectedStoryBug) {
+      // Debug parent comment requirement check
+      const needsComments = parentRequiresComments(selectedStoryBug);
+      console.log(`🔍 PARENT COMMENT CHECK: ${selectedStoryBug.parentWorkItem.title} needs comments? ${needsComments}`);
+      
+      // Log the task states
+      const taskStates = [
+        ...selectedStoryBug.activeTasks, 
+        ...selectedStoryBug.completedTasks
+      ].map(task => `${task.title}: ${task.state}`);
+      
+      console.log('Task states:', taskStates);
+    }
+  }, [selectedStoryBug]);
+
+  const getStateColor = (state: string) => {
+    switch (state) {
+      case 'New':
+      case 'To Do':
+      case 'Proposed':
+        return '#6495ED'; // Blue
+      case 'Active':
+      case 'In Progress':
+        return '#FFD700'; // Gold
+      case 'Completed':
+      case 'Done':
+        return '#32CD32'; // Green
+      case 'Closed':
+      case 'Resolved':
+        return '#808080'; // Gray
+      default:
+        return '#808080'; // Default Gray
+    }
+  };
+
+  const getViolationColor = (violationType?: string) => {
+    if (!violationType) return '#4CAF50'; // Green for compliant
+    
+    switch (violationType) {
+      case 'missing_activation_comment':
+        return '#FF9800'; // Orange
+      case 'missing_completion_comment':
+        return '#F44336'; // Red
+      case 'stale_item':
+        return '#9C27B0'; // Purple
+      case 'missing_user_story_comments':
+        return '#F44336'; // Red
+      default:
+        return '#4CAF50'; // Green
+    }
+  };
+
+  const getViolationLabel = (violationType?: string) => {
+    if (!violationType) return 'Compliant';
+    
+    switch (violationType) {
+      case 'missing_activation_comment':
+        return 'Missing Activation Comment';
+      case 'missing_completion_comment':
+        return 'Missing Completion Comment';
+      case 'stale_item':
+        return 'Stale Item';
+      case 'missing_user_story_comments':
+        return 'Missing Parent Comments';
+      default:
+        return 'Compliant';
+    }
+  };
+
+  const getUpdateAgeColor = (date?: string) => {
+    if (!date) return '#F44336'; // Red if no date
+    
+    const daysSince = Math.floor((new Date().getTime() - new Date(date).getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (daysSince <= 3) return '#4CAF50'; // Green if updated within 3 days
+    if (daysSince <= 7) return '#FFC107'; // Yellow if updated within 7 days
+    if (daysSince <= 14) return '#FF9800'; // Orange if updated within 14 days
+    return '#F44336'; // Red if updated more than 14 days ago
+  };
+
+  return (
+    <Box>
+      <Paper sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" gutterBottom>
+          Activity Monitoring Panel
+        </Typography>
+        <Typography variant="body2" paragraph>
+          Monitor task activities by checking compliance with parent comments requirements. This tool helps ensure proper team communication for User Stories and Bugs.
+        </Typography>
+        <FormControl fullWidth sx={{ mb: 3 }}>
+          <InputLabel id="sprint-select-label">Sprint</InputLabel>
+          <Select
+            labelId="sprint-select-label"
+            value={selectedSprintId}
+            label="Sprint"
+            onChange={(e) => setSelectedSprintId(e.target.value)}
+            disabled={isLoading || sprintsLoading}
+          >
+            {sprints.map((sprint) => (
+              <MenuItem key={sprint.id} value={sprint.id.toString()}>
+                {sprint.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <Button 
+          variant="contained" 
+          onClick={analyzeActivityComments}
+          disabled={isLoading || !selectedSprintId}
+          startIcon={isLoading ? <CircularProgress size={20} color="inherit" /> : undefined}
+        >
+          {isLoading ? 'Analyzing...' : 'Analyze Activity Comments'}
+        </Button>
+      </Paper>
+
+      {isLoading && (
+        <LinearProgress sx={{ mb: 3 }} />
+      )}
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {error}
+        </Alert>
+      )}
+
+      {!isLoading && !error && tagCategories.length === 0 && storyBugActivities.length > 0 && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Analysis complete, but no categorized User Stories or Bugs found.
+        </Alert>
+      )}
+
+      {tagCategories.map((category) => (
+        <Paper key={category.tag} sx={{ p: 3, mb: 3 }}>
+          <Typography variant="h6" gutterBottom>
+            {category.tag} ({category.storyBugs.length})
+          </Typography>
+          
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Story/Bug</TableCell>
+                  <TableCell>State</TableCell>
+                  <TableCell>Assigned To</TableCell>
+                  <TableCell>Tasks</TableCell>
+                  <TableCell>Comments</TableCell>
+                  <TableCell>Compliance</TableCell>
+                  <TableCell>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {category.storyBugs.map((storyBug) => (
+                  <TableRow key={storyBug.parentWorkItem.id}>
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start' }}>
+                        {storyBug.parentWorkItem.type === 'Bug' ? (
+                          <BugReportIcon sx={{ mr: 1, color: 'error.main' }} />
+                        ) : (
+                          <TaskIcon sx={{ mr: 1, color: 'primary.main' }} />
+                        )}
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {storyBug.parentWorkItem.title}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            ID: {storyBug.parentWorkItem.id}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Chip 
+                        label={storyBug.parentWorkItem.state} 
+                        size="small"
+                        sx={{
+                          backgroundColor: getStateColor(storyBug.parentWorkItem.state),
+                          color: 'white',
+                          fontWeight: 600
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                        <PersonIcon sx={{ fontSize: 16, mr: 1 }} />
+                        {storyBug.parentWorkItem.assignedTo || 'Unassigned'}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Tooltip title={`${storyBug.activeTasks.length} active, ${storyBug.completedTasks.length} completed`}>
+                        <Typography variant="body2">
+                          {storyBug.totalTasks} ({storyBug.activeTasks.length}/{storyBug.completedTasks.length})
+                        </Typography>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                        <CommentIcon sx={{ fontSize: 16, mr: 1 }} />
+                        <Typography variant="body2">
+                          {storyBug.parentComments.length}
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <Tooltip title={`${storyBug.totalTasks - storyBug.violationCount} compliant tasks out of ${storyBug.totalTasks} total`}>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              mr: 1, 
+                              color: storyBug.complianceScore < 70 ? 'error.main' : 
+                                     storyBug.complianceScore < 100 ? 'warning.main' : 
+                                     'success.main',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            {storyBug.complianceScore}%
+                          </Typography>
+                          {storyBug.violationCount > 0 && (
+                            <Chip 
+                              label={`${storyBug.violationCount} issues`} 
+                              size="small" 
+                              color="error" 
+                              sx={{ height: 20, fontSize: '0.7rem' }}
+                            />
+                          )}
+                        </Box>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell>
+                      <Button 
+                        size="small" 
+                        variant="outlined"
+                        onClick={() => showStoryBugDetails(storyBug)}
+                      >
+                        Details
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      ))}
+
+      {/* Details Dialog */}
+      <Dialog 
+        open={detailsOpen} 
+        onClose={() => setDetailsOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          {selectedStoryBug && (
+            <Box sx={{ display: 'flex', alignItems: 'flex-start' }}>
+              {selectedStoryBug.parentWorkItem.type === 'Bug' ? (
+                <BugReportIcon sx={{ mr: 1, mt: 0.5, color: 'error.main' }} />
+              ) : (
+                <TaskIcon sx={{ mr: 1, mt: 0.5, color: 'primary.main' }} />
+              )}
+              <Box>
+                <Typography variant="h6">{selectedStoryBug.parentWorkItem.title}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {selectedStoryBug.parentWorkItem.type} • {selectedStoryBug.complianceScore}% Compliance • <strong>{selectedStoryBug.parentComments.length} Non-Automated Comments</strong>
+                </Typography>
+              </Box>
+            </Box>
+          )}
+        </DialogTitle>
+        <DialogContent>
+          {selectedStoryBug && parentRequiresComments(selectedStoryBug) && (
+            <Alert 
+              severity="error" 
+              sx={{ mb: 3, fontWeight: 'bold' }}
+              action={
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={() => window.open(`https://dev.azure.com/${selectedStoryBug.parentWorkItem.url}`, '_blank')}
+                >
+                  ADD COMMENT
+                </Button>
+              }
+            >
+              Parent {selectedStoryBug.parentWorkItem.type} requires comments! You have recently updated tasks but no comments on the parent item.
+            </Alert>
+          )}
+          {selectedStoryBug && (
+            <Box>
+              {/* Violations Summary */}
+              {selectedStoryBug.violationCount > 0 && (
+                <Alert severity="error" sx={{ mb: 3 }}>
+                  <AlertTitle>⚠️ CRITICAL: Comment Violations Found</AlertTitle>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                    {selectedStoryBug.violationCount} task(s) where assigned team members have NOT commented on the parent story/bug.
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    🚨 <strong>REQUIREMENTS:</strong> 
+                  </Typography>
+                  <Typography variant="body2" component="div">
+                    <Box component="ul" sx={{ margin: '4px 0', paddingLeft: '20px' }}>
+                      <li><strong>Parent Work Item:</strong> Must have comments if there are any active/completed tasks updated within the last 3 days</li>
+                      <li><strong>Task Level:</strong> Every active/completed task must have at least 1 comment from the assigned user on the parent User Story/Bug (NOT on the task itself)</li>
+                    </Box>
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1, color: 'error.main', fontWeight: 'bold' }}>
+                    🎯 FOCUS: We only check User Story/Bug level comments, NOT task level comments.
+                  </Typography>
+                </Alert>
+              )}
+
+              {/* Active Tasks */}
+              {selectedStoryBug.activeTasks.length > 0 && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="h6" gutterBottom>
+                    Active Tasks ({selectedStoryBug.activeTasks.length})
+                  </Typography>
+                  <TableContainer component={Paper}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Task</TableCell>
+                          <TableCell>Assigned To</TableCell>
+                          <TableCell>Last Updated</TableCell>
+                          <TableCell>Comments on Parent Story/Bug</TableCell>
+                          <TableCell>Status</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {selectedStoryBug.activeTasks.map((task) => (
+                          <TableRow key={task.id}>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {task.title}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                ID: {task.id}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>{task.assignedTo}</TableCell>
+                            <TableCell>
+                              <Tooltip title={`Last updated on ${task.activatedDate ? new Date(task.activatedDate).toLocaleString() : 'unknown date'}`}>
+                                <Typography 
+                                  variant="caption" 
+                                  sx={{ 
+                                    fontWeight: 'bold', 
+                                    display: 'block',
+                                    color: getUpdateAgeColor(task.activatedDate ? 
+                                      task.activatedDate : undefined)
+                                  }}
+                                >
+                                  {task.activatedDate ? 
+                                    `${Math.floor((new Date().getTime() - new Date(task.activatedDate).getTime()) / (1000 * 60 * 60 * 24))} days ago` :
+                                    'Not activated'
+                                  }
+                                </Typography>
+                              </Tooltip>
+                            </TableCell>
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                <CommentIcon sx={{ fontSize: 16, mr: 1 }} />
+                                <Tooltip title={`Number of comments by ${task.assignedTo || 'assigned user'} on the parent User Story/Bug`}>
+                                  <Typography variant="body2">
+                                    {task.parentCommentCount}
+                                  </Typography>
+                                </Tooltip>
+                                {task.parentCommentCount === 0 && task.isViolation && (
+                                  <Chip 
+                                    label="USER NOT COMMENTED ON PARENT!" 
+                                    size="small" 
+                                    color="error" 
+                                    sx={{ 
+                                      ml: 1, 
+                                      fontSize: '0.7rem',
+                                      fontWeight: 'bold',
+                                      animation: 'pulse 2s infinite'
+                                    }}
+                                  />
+                                )}
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={task.isViolation ? getViolationLabel(task.violationType) : 'Compliant'}
+                                size="small"
+                                sx={{
+                                  backgroundColor: getViolationColor(task.violationType),
+                                  color: 'white',
+                                  fontWeight: 600
+                                }}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              )}
+
+              {/* Completed Tasks */}
+              {selectedStoryBug.completedTasks.length > 0 && (
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="h6" gutterBottom>
+                    Completed Tasks ({selectedStoryBug.completedTasks.length})
+                  </Typography>
+                  <TableContainer component={Paper}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Task</TableCell>
+                          <TableCell>Assigned To</TableCell>
+                          <TableCell>Last Updated</TableCell>
+                          <TableCell>Comments on Parent Story/Bug</TableCell>
+                          <TableCell>Status</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {selectedStoryBug.completedTasks.map((task) => (
+                          <TableRow key={task.id}>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {task.title}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                ID: {task.id}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>{task.assignedTo}</TableCell>
+                            <TableCell>
+                              {task.completedDate ? (
+                                <>
+                                  <Typography variant="body2">
+                                    {new Date(task.completedDate).toLocaleDateString()}
+                                  </Typography>
+                                <Tooltip title={`Completed on ${new Date(task.completedDate).toLocaleString()}`}>
+                                  <Typography 
+                                    variant="caption" 
+                                    sx={{ 
+                                      color: getUpdateAgeColor(task.completedDate)
+                                    }}
+                                  >
+                                    {Math.floor((new Date().getTime() - new Date(task.completedDate).getTime()) / (1000 * 60 * 60 * 24))} days ago
+                                  </Typography>
+                                </Tooltip>
+                                </>
+                              ) : (
+                                <Typography variant="caption">Unknown date</Typography>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                <CommentIcon sx={{ fontSize: 16, mr: 1 }} />
+                                <Tooltip title={`Number of comments by ${task.assignedTo || 'assigned user'} on the parent User Story/Bug`}>
+                                  <Typography variant="body2">
+                                    {task.parentCommentCount}
+                                  </Typography>
+                                </Tooltip>
+                                {task.parentCommentCount === 0 && task.isViolation && (
+                                  <Chip 
+                                    label="USER NOT COMMENTED ON PARENT!" 
+                                    size="small" 
+                                    color="error" 
+                                    sx={{ 
+                                      ml: 1, 
+                                      fontSize: '0.7rem',
+                                      fontWeight: 'bold',
+                                      animation: 'pulse 2s infinite'
+                                    }}
+                                  />
+                                )}
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={task.isViolation ? getViolationLabel(task.violationType) : 'Compliant'}
+                                size="small"
+                                sx={{
+                                  backgroundColor: getViolationColor(task.violationType),
+                                  color: 'white',
+                                  fontWeight: 600
+                                }}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              )}
+
+              {selectedStoryBug.activeTasks.length === 0 && selectedStoryBug.completedTasks.length === 0 && (
+                <Alert severity="info">
+                  <Typography variant="body2">
+                    No tasks found for this story/bug in the selected sprint.
+                  </Typography>
+                </Alert>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDetailsOpen(false)}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Information Panel */}
+      <Paper sx={{ p: 3, mt: 3 }}>
+        <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
+          <InfoIcon sx={{ mr: 1 }} />
+          Activity Monitoring Rules
+        </Typography>
+        <Typography variant="body2" paragraph>
+          This panel monitors story/bug activities by checking task compliance with parent commenting requirements from the assigned team member:
+        </Typography>
+        <List dense>
+          <ListItem>
+            <ListItemIcon>
+              <CheckCircleIcon color="success" />
+            </ListItemIcon>
+            <ListItemText 
+              primary="Task Activation Comments" 
+              secondary="Tasks that are recently activated require comments from the assigned team member on the parent User Story/Bug" 
+            />
+          </ListItem>
+          <ListItem>
+            <ListItemIcon>
+              <CheckCircleIcon color="success" />
+            </ListItemIcon>
+            <ListItemText 
+              primary="Recent Task Updates" 
+              secondary="Tasks updated within the last 3 days require a comment on the parent User Story/Bug from the assigned team member" 
+            />
+          </ListItem>
+          <ListItem>
+            <ListItemIcon>
+              <WarningIcon color="error" />
+            </ListItemIcon>
+            <ListItemText 
+              primary="Parent Work Item Comments" 
+              secondary="User Stories and Bugs with active or completed tasks must have comments to track progress and decisions" 
+            />
+          </ListItem>
+        </List>
+        <Typography variant="body2" paragraph sx={{ fontWeight: 'bold', mt: 2, color: 'primary.main' }}>
+          Important: Comments must be made on the parent User Story/Bug, not on the individual tasks themselves.
+        </Typography>
+      </Paper>
+    </Box>
+  );
+};
+
+export default ActivityMonitoringPanel;

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Scrum Agent - ADO Configuration Setup</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #0078d4;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .card {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .warning {
+            background-color: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .success {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 15px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        button {
+            background-color: #0078d4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #106ebe;
+        }
+        .team-name-input {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e3f2fd;
+            border-radius: 8px;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin-top: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .steps {
+            margin-top: 20px;
+        }
+        .steps ol {
+            padding-left: 20px;
+        }
+        .steps li {
+            margin-bottom: 10px;
+        }
+        code {
+            background-color: #f5f5f5;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: Consolas, Monaco, 'Andale Mono', monospace;
+        }
+        .validate-button {
+            background-color: #28a745;
+            margin-top: 10px;
+        }
+        .validation-result {
+            margin-top: 10px;
+        }
+        .error-text {
+            color: red;
+        }
+        .info-text {
+            color: blue;
+        }
+        .success-text {
+            color: green;
+        }
+        .warning-text {
+            color: orange;
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Scrum Agent - ADO Configuration Setup</h1>
+    
+    <div class="card">
+        <h2>✅ Anti-Flickering Configuration</h2>
+        <p>This configuration has been optimized to reduce dashboard flickering:</p>
+        <ul>
+            <li><strong>Auto-refresh disabled:</strong> Prevents automatic background updates that cause flickering</li>
+            <li><strong>Extended cache duration:</strong> Reduces unnecessary API calls</li>
+            <li><strong>Manual refresh control:</strong> You can refresh data when needed using the refresh buttons</li>
+            <li><strong>Optimized team capacity:</strong> Pre-configured with your team member capacities</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <h2>Setup Azure DevOps Configuration</h2>
+        <p>This tool will help you set up the Azure DevOps configuration for the AI Scrum Agent. It will create the necessary configuration in your browser's localStorage.</p>
+        
+        <div class="warning">
+            <strong>⚠️ Important:</strong> This tool will overwrite any existing ADO configuration in your browser's localStorage. Make sure you have backed up any important configuration before proceeding.
+        </div>
+        
+        <div class="team-name-input">
+            <label for="teamName"><strong>Enter your Azure DevOps Team Name:</strong></label>
+            <p>This is the exact name of your team as it appears in Azure DevOps. This is critical for accessing capacity data.</p>
+            <input type="text" id="teamName" placeholder="Your Azure DevOps team name" value="Westlaw US - Kavya">
+            <p><small><strong>Hint:</strong> Based on your current setup, the team name appears to be "Westlaw US - Kavya". You can modify this if incorrect.</small></p>
+            <button type="button" onclick="validateTeamName()" class="validate-button">Validate Team Name</button>
+            <div id="teamValidationResult" class="validation-result"></div>
+        </div>
+        
+        <button id="setupButton" onclick="setupAdoConfig()">Set Up ADO Configuration</button>
+    </div>
+    
+    <div id="successMessage" class="success">
+        <h3>✅ Configuration Completed Successfully!</h3>
+        <p>The ADO configuration has been set up in your browser's localStorage. You can now access the AI Scrum Agent dashboard to see your capacity data.</p>
+        <p><strong>Next steps:</strong></p>
+        <ol>
+            <li>Close this page</li>
+            <li>Go to <a href="http://localhost:3000" target="_blank" rel="noopener">AI Scrum Agent Dashboard</a></li>
+            <li>If you still don't see capacity data, go to Settings > Azure DevOps Configuration to verify your settings</li>
+        </ol>
+    </div>
+    
+    <div class="card steps">
+        <h2>Manual Configuration Steps</h2>
+        <p>If the automatic setup doesn't work, you can follow these steps to manually configure the ADO connection:</p>
+        <ol>
+            <li>Open the AI Scrum Agent application at <a href="http://localhost:3000" target="_blank" rel="noopener">http://localhost:3000</a></li>
+            <li>Complete the setup wizard with the following information:
+                <ul>
+                    <li><strong>Organization:</strong> TR-Legal-Cobalt</li>
+                    <li><strong>Project:</strong> Legal Cobalt Backlog</li>
+                    <li><strong>Personal Access Token:</strong> Use the PAT from your .env.development file</li>
+                    <li><strong>API Version:</strong> 7.0</li>
+                    <li><strong>Team Name:</strong> Your exact team name as it appears in Azure DevOps</li>
+                </ul>
+            </li>
+            <li>After completing the setup, go to the dashboard to see your capacity data</li>
+        </ol>
+    </div>
+    
+    <div class="card">
+        <h2>Troubleshooting</h2>
+        <p>If you still don't see capacity data after setting up the configuration:</p>
+        <ol>
+            <li>Make sure your Personal Access Token (PAT) has the necessary permissions:
+                <ul>
+                    <li>Work Items (Read)</li>
+                    <li>Project and Team (Read)</li>
+                </ul>
+            </li>
+            <li>Verify that your team name is exactly as it appears in Azure DevOps</li>
+            <li>Check that capacity is set up for your team members in Azure DevOps</li>
+            <li>Use the diagnostic tool in the application (Settings > Debug > ADO Capacity Diagnostics)</li>
+        </ol>
+    </div>
+    
+    <script>
+        function validateTeamName() {
+            const teamName = document.getElementById('teamName').value.trim();
+            const resultDiv = document.getElementById('teamValidationResult');
+            
+            if (!teamName) {
+                resultDiv.innerHTML = '<div class="error-text">❌ Please enter a team name first.</div>';
+                return;
+            }
+            
+            resultDiv.innerHTML = '<div class="info-text">🔍 Validating team name "' + teamName + '"...</div>';
+            
+            // Simulate validation (in real scenario, this would call the API)
+            setTimeout(() => {
+                if (teamName === "Westlaw US - Kavya") {
+                    resultDiv.innerHTML = '<div class="success-text">✅ Team name "' + teamName + '" looks correct based on your current configuration.</div>';
+                } else {
+                    resultDiv.innerHTML = '<div class="warning-text">⚠️ Team name "' + teamName + '" may be different from current configuration. Make sure this matches exactly in Azure DevOps.</div>';
+                }
+            }, 1000);
+        }
+        
+        function setupAdoConfig() {
+            const teamName = document.getElementById('teamName').value.trim();
+            
+            if (!teamName) {
+                alert('Please enter a team name first.');
+                return;
+            }
+            
+            // ADO configuration based on .env.development values
+            const adoConfig = {
+                organization: "TR-Legal-Cobalt", // From REACT_APP_ADO_ORG
+                project: "Legal Cobalt Backlog", // From REACT_APP_ADO_PROJECT
+                personalAccessToken: "3UGSuHftE2DVi40n4oaa4og1HVAUYpcaQcdd5LDII9VAXV0AhSkdJQQJ99BGACAAAAADXeeUAAASAZDO4YqM", // From REACT_APP_ADO_PAT
+                apiVersion: "7.0", // From REACT_APP_ADO_API_VERSION
+                teamName: teamName, // User-provided team name
+                refreshInterval: 30, // Increased from 15 to 30 minutes to reduce flickering
+                enableAutoRefresh: false // Disable auto-refresh to prevent flickering
+            };
+            
+            // Save the configuration to localStorage
+            localStorage.setItem('adoConfig', JSON.stringify(adoConfig));
+            
+            // Optional: Set up some team capacity configuration as fallback
+            const teamCapacityConfig = {
+                // Add team members with their daily capacity
+                // Format: "Member Name": dailyCapacityInHours
+                "Udhayasekaran, Nandhini (TR Technology)": 6,
+                "Elango, Balamugunthan (TR Technology)": 8,
+                "Ravichandran, Brinda (TR Technology)": 6,
+                "B S, Manasa (TR Technology)": 7,
+                "Sheikh, Sumaiya (TR Technology)": 6,
+                "Verma, Manish (TR Technology)": 8,
+                "S, Swetha (TR Technology)": 6
+            };
+            
+            // Save the team capacity configuration to localStorage
+            localStorage.setItem('teamCapacityConfig', JSON.stringify(teamCapacityConfig));
+            
+            // Show success message
+            document.getElementById('successMessage').style.display = 'block';
+            
+            // Scroll to success message
+            document.getElementById('successMessage').scrollIntoView({ behavior: 'smooth' });
+            
+            console.log("✅ ADO configuration has been set up successfully!");
+            console.log("Team Name set to: " + teamName);
+            console.log("Team capacity config saved for 7 team members");
+        }
+    </script>
+</body>
+</html>

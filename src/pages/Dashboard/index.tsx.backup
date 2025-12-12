@@ -1,0 +1,3727 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { 
+  Grid, 
+  Paper, 
+  Typography, 
+  Box, 
+  CircularProgress, 
+  Alert, 
+  LinearProgress, 
+  ToggleButton, 
+  ToggleButtonGroup,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  IconButton,
+  Chip,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  SelectChangeEvent,
+  Fab,
+  Drawer,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Divider
+} from '@mui/material';
+import { 
+  Close as CloseIcon, 
+  OpenInNew as OpenInNewIcon, 
+  GitHub as GitHubIcon,
+  Menu as MenuIcon,
+  ChevronLeft as ChevronLeftIcon,
+  Dashboard as DashboardIcon,
+  FilterList as FilterListIcon,
+  Analytics as AnalyticsIcon,
+  Settings as SettingsIcon,
+  Group as TeamIcon,
+  Assignment as WorkItemsIcon,
+  SmartToy as AiAssistantIcon
+} from '@mui/icons-material';
+import { styled } from '@mui/material/styles';
+import adoService, { Sprint, WorkItem } from '../../services/adoService';
+import { 
+  getEnabledCategories, 
+  groupWorkItemsByCategory
+} from '../../utils/workItemCategorizer';
+import ExecutiveSummaryWithActivityMonitoring from '../../components/dashboard/ExecutiveSummaryWithActivityMonitoring';
+// Hidden components - uncomment if needed
+// import AiScrumAssistant from '../../components/dashboard/AiScrumAssistant';
+// import DeveloperEngagementPanel from '../../components/dashboard/DeveloperEngagementPanel';
+// import GitPRMonitoringPanel from '../../components/dashboard/GitPRMonitoringPanel';
+
+const Item = styled(Paper)(({ theme }) => ({
+  backgroundColor: theme.palette.mode === 'dark' ? '#1A2027' : '#ffffff',
+  ...theme.typography.body2,
+  padding: theme.spacing(2),
+  color: theme.palette.text.secondary,
+  borderRadius: 8,
+  border: '1px solid #dee2e6',
+  boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+}));
+
+const Dashboard: React.FC = () => {
+  const [isLoading, setIsLoading] = useState(false); // Changed from true to false to prevent loading spinner
+  const [error, setError] = useState<string | null>(null);
+  const [currentSprint, setCurrentSprint] = useState<Sprint | null>(null);
+  const [availableSprints, setAvailableSprints] = useState<Sprint[]>([]);
+  const [selectedSprintId, setSelectedSprintId] = useState<string | null>(null);
+  const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [metricsFilter, setMetricsFilter] = useState<string>('all');
+  const [selectedWorkItem, setSelectedWorkItem] = useState<WorkItem | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isGroupDialogOpen, setIsGroupDialogOpen] = useState(false);
+  const [groupDialogItems, setGroupDialogItems] = useState<WorkItem[]>([]);
+  const [groupDialogTitle, setGroupDialogTitle] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sprintLoading, setSprintLoading] = useState(false);
+  
+  // Use ref for cache to avoid dependency issues
+  const dataCacheRef = useRef<{
+    timestamp: number;
+    sprintId: string | null;
+    currentSprint: Sprint | null;
+    availableSprints: Sprint[];
+    workItems: WorkItem[];
+  } | null>(null);
+
+  // Add debouncing ref to prevent excessive refreshes
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cache duration: 10 minutes (increased from 5 to reduce flickering)
+  const CACHE_DURATION = 10 * 60 * 1000;
+
+  // Helper function to get selected sprint
+  const getSelectedSprint = () => {
+    if (!selectedSprintId) return currentSprint;
+    return availableSprints.find(sprint => sprint.id.toString() === selectedSprintId) || currentSprint;
+  };
+
+  // Function to fetch dashboard data with caching
+  const fetchDashboardData = useCallback(async (forceRefresh = false, targetSprintId?: string) => {
+    try {
+      // Determine which sprint ID to use - either passed parameter, selected sprint, or current sprint
+      const sprintIdToFetch = targetSprintId || selectedSprintId;
+      
+      console.log('🔄 ==================== SPRINT DATA FETCH ====================');
+      console.log(`🔄 SPRINT_FETCH: Starting fetch - targetSprintId: ${targetSprintId}, selectedSprintId: ${selectedSprintId}, final: ${sprintIdToFetch}`);
+      
+      // Check if we have valid cached data and not forcing refresh
+      // Cache should also match the target sprint
+      const currentCache = dataCacheRef.current;
+      const cacheValid = !forceRefresh && 
+        currentCache && 
+        Date.now() - currentCache.timestamp < CACHE_DURATION &&
+        currentCache.sprintId === sprintIdToFetch;
+        
+      if (cacheValid) {
+        console.log(`🔄 SPRINT_FETCH: Using cached data for sprint ${sprintIdToFetch} (${currentCache.workItems.length} items)`);
+        setCurrentSprint(currentCache.currentSprint);
+        setAvailableSprints(currentCache.availableSprints);
+        setWorkItems(currentCache.workItems);
+        setIsLoading(false);
+        console.log('🔄 ========================================================');
+        return;
+      }
+
+      console.log(`🔄 SPRINT_FETCH: Cache invalid or force refresh - fetching fresh data for sprint ${sprintIdToFetch}`);
+      setIsLoading(true);
+      setError(null);
+
+      // Get current sprint and available sprints (these don't change based on selection)
+      const sprint = await adoService.getCurrentSprint();
+      setCurrentSprint(sprint);
+      console.log(`🔄 SPRINT_FETCH: Current sprint from API: ${sprint?.name} (ID: ${sprint?.id})`);
+
+      const sprints = await adoService.getSprints();
+      setAvailableSprints(sprints);
+      console.log(`🔄 SPRINT_FETCH: Available sprints: ${sprints.length} sprints loaded`);
+
+      // Determine which sprint to use for work items
+      let sprintToUse = sprintIdToFetch;
+      
+      // If no sprint is selected, use current sprint but don't set selectedSprintId
+      // This way, selectedSprintId remains null to indicate we're viewing the default (current) sprint
+      if (!sprintToUse && sprint) {
+        sprintToUse = sprint.id.toString();
+        console.log(`🔄 SPRINT_FETCH: No sprint selected, using current sprint ${sprintToUse} (keeping selectedSprintId as null)`);
+      }
+
+      // Fetch work items for the determined sprint
+      if (sprintToUse) {
+        console.log(`🔄 SPRINT_FETCH: Fetching work items for sprint ID: ${sprintToUse}`);
+        const items = await adoService.getSprintWorkItems(sprintToUse);
+        setWorkItems(items);
+        console.log(`🔄 SPRINT_FETCH: ✅ Successfully loaded ${items.length} work items for sprint ${sprintToUse}`);
+
+        // Cache the data (cache is now sprint-specific)
+        dataCacheRef.current = {
+          timestamp: Date.now(),
+          sprintId: sprintToUse,
+          currentSprint: sprint,
+          availableSprints: sprints,
+          workItems: items
+        };
+        
+        console.log(`🔄 SPRINT_FETCH: Data cached for sprint ${sprintToUse} at ${new Date().toLocaleTimeString()}`);
+      }
+      console.log('🔄 ========================================================');
+    } catch (err) {
+      console.error('🔄 SPRINT_FETCH: ❌ Error fetching dashboard data:', err);
+      setError('Failed to load dashboard data. Please check your connection and try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedSprintId, CACHE_DURATION]);
+
+  // Handle sprint selection change
+  const handleSprintChange = async (event: SelectChangeEvent<string>) => {
+    const sprintId = event.target.value; // Keep as string, don't use parseInt
+    
+    console.log('📅 ==================== SPRINT CHANGE ====================');
+    console.log(`📅 SPRINT_CHANGE: User selected sprint ID: ${sprintId}`);
+    console.log(`📅 SPRINT_CHANGE: Previous selectedSprintId: ${selectedSprintId}`);
+    
+    setSelectedSprintId(sprintId);
+    
+    // Check if we already have cached data for this sprint
+    const currentCache = dataCacheRef.current;
+    const hasValidCache = currentCache && 
+      currentCache.sprintId === sprintId && 
+      Date.now() - currentCache.timestamp < CACHE_DURATION;
+    
+    if (hasValidCache) {
+      console.log(`📅 SPRINT_CHANGE: ✅ Using cached data for sprint ${sprintId} (${currentCache.workItems.length} items)`);
+      // Use cached data
+      setWorkItems(currentCache.workItems);
+      console.log('📅 ======================================================');
+      return;
+    }
+    
+    try {
+      console.log(`📅 SPRINT_CHANGE: No valid cache found, fetching fresh data for sprint ${sprintId}`);
+      setSprintLoading(true);
+      setError(null);
+      
+      // Fetch work items for the selected sprint
+      const items = await adoService.getSprintWorkItems(sprintId);
+      setWorkItems(items);
+      console.log(`📅 SPRINT_CHANGE: ✅ Successfully fetched ${items.length} work items for sprint ${sprintId}`);
+      
+      // Update cache with new sprint data
+      dataCacheRef.current = {
+        timestamp: Date.now(),
+        sprintId: sprintId,
+        currentSprint: currentSprint,
+        availableSprints: availableSprints,
+        workItems: items
+      };
+      
+      console.log(`📅 SPRINT_CHANGE: Cache updated for sprint ${sprintId} at ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      console.error('📅 SPRINT_CHANGE: ❌ Error fetching sprint work items:', err);
+      setError('Failed to load sprint work items.');
+    } finally {
+      setSprintLoading(false);
+      console.log('📅 ======================================================');
+    }
+  };
+
+  // Handle opening work item details dialog
+  // Hidden function - was used in User Stories Summary (now commented out)
+  /*
+  const handleWorkItemClick = (workItem: WorkItem) => {
+    setSelectedWorkItem(workItem);
+    setIsDialogOpen(true);
+  };
+  */
+
+  const handleDialogClose = () => {
+    setIsDialogOpen(false);
+    setSelectedWorkItem(null);
+  };
+
+  const handleGroupDialogClose = () => {
+    setIsGroupDialogOpen(false);
+    setGroupDialogItems([]);
+    setGroupDialogTitle('');
+  };
+
+  const handleGroupClick = (title: string, items: WorkItem[]) => {
+    setGroupDialogTitle(title);
+    setGroupDialogItems(items);
+    setIsGroupDialogOpen(true);
+  };
+
+  // Generate ADO work item URL
+  // Hidden function - was used in User Stories Summary (now commented out)
+  /*
+  const getPriorityColor = (priority: number | null | undefined): string => {
+    switch (priority) {
+      case 1: return '#dc3545'; // Critical - Red
+      case 2: return '#ffc107'; // High - Amber  
+      case 3: return '#28a745'; // Medium - Green
+      default: return '#6c757d'; // Low/None - Gray
+    }
+  };
+  */
+
+  const getAdoWorkItemUrl = (workItem: WorkItem) => {
+    // If the work item already has a URL, use it
+    if (workItem.url) {
+      return workItem.url;
+    }
+    
+    // First try to get configuration from localStorage (Settings page)
+    let organization: string | undefined;
+    let project: string | undefined;
+    
+    try {
+      const adoConfigStr = localStorage.getItem('adoConfig');
+      if (adoConfigStr) {
+        const adoConfig = JSON.parse(adoConfigStr);
+        organization = adoConfig.organization;
+        project = adoConfig.project;
+        console.log('Using ADO config from localStorage:', { organization, project });
+      }
+    } catch (error) {
+      console.warn('Failed to parse ADO config from localStorage:', error);
+    }
+    
+    // Fallback to environment variables if not found in localStorage
+    if (!organization || !project) {
+      organization = process.env.REACT_APP_ADO_ORG;
+      project = process.env.REACT_APP_ADO_PROJECT;
+      console.log('Using ADO config from environment variables:', { organization, project });
+    }
+    
+    const adoBaseUrl = process.env.REACT_APP_ADO_API_URL || 'https://dev.azure.com';
+    
+    // Final fallback values
+    if (!organization || organization === 'your-organization') {
+      organization = 'TR-Legal-Cobalt';
+    }
+    if (!project || project === 'your-project') {
+      project = 'Legal Cobalt Backlog';
+    }
+    
+    // Clean up organization and project names (remove extra spaces)
+    organization = organization?.trim();
+    project = project?.trim();
+    
+    // Construct the proper ADO work item URL
+    // URL encode the organization and project to handle spaces and special characters
+    const encodedOrganization = encodeURIComponent(organization);
+    const encodedProject = encodeURIComponent(project);
+    const finalUrl = `${adoBaseUrl}/${encodedOrganization}/${encodedProject}/_workitems/edit/${workItem.id}`;
+    console.log('Generated ADO URL:', finalUrl);
+    return finalUrl;
+  };
+
+  // Function to clean and format HTML description
+  const formatDescription = (htmlString: string | null | undefined): string => {
+    if (!htmlString) return 'No description available for this work item.';
+    
+    // Remove HTML tags and decode HTML entities
+    const cleaned = htmlString
+      .replace(/<br\s*\/?>/gi, '\n')          // Replace <br> with newlines
+      .replace(/<\/div>/gi, '\n')              // Replace </div> with newlines
+      .replace(/<div[^>]*>/gi, '')             // Remove <div> tags
+      .replace(/<span[^>]*>/gi, '')            // Remove <span> tags
+      .replace(/<\/span>/gi, '')               // Remove </span> tags
+      .replace(/<p[^>]*>/gi, '\n')             // Replace <p> with newlines
+      .replace(/<\/p>/gi, '\n')                // Replace </p> with newlines
+      .replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, '$2 ($1)') // Convert links to text with URL
+      .replace(/&nbsp;/gi, ' ')                // Replace &nbsp; with spaces
+      .replace(/&amp;/gi, '&')                 // Replace &amp; with &
+      .replace(/&lt;/gi, '<')                  // Replace &lt; with <
+      .replace(/&gt;/gi, '>')                  // Replace &gt; with >
+      .replace(/&quot;/gi, '"')                // Replace &quot; with "
+      .replace(/<[^>]*>/g, '')                 // Remove any remaining HTML tags
+      .replace(/\n\s*\n/g, '\n\n')             // Clean up multiple newlines
+      .trim();                                 // Remove leading/trailing whitespace
+    
+    return cleaned || 'No description available for this work item.';
+  };
+
+  // Function to get PR links from work item data
+  const getPRLinks = (workItem: WorkItem): string[] => {
+    // Debug logging
+    console.log(`Getting PR links for ${workItem.type} ${workItem.id}:`, {
+      pullRequests: workItem.pullRequests,
+      gitCommits: workItem.gitCommits,
+      description: workItem.description?.substring(0, 200) + '...'
+    });
+    
+    // First check if work item has pullRequests array from ADO relations
+    if (workItem.pullRequests && workItem.pullRequests.length > 0) {
+      console.log(`Found ${workItem.pullRequests.length} PR links in pullRequests array`);
+      return workItem.pullRequests;
+    }
+    
+    // Fallback: check Git commits if available and try to find related PRs
+    if (workItem.gitCommits && workItem.gitCommits.length > 0) {
+      // For ADO commits, we can't easily convert to PR URLs without additional API calls
+      // So we'll return empty for now, but log that commits exist
+      console.log(`Work item ${workItem.id} has ${workItem.gitCommits.length} git commits but no PR links`);
+    }
+    
+    // Check for GitHub links in description
+    const description = workItem.description || '';
+    const githubPRMatches = description.match(/https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/g);
+    if (githubPRMatches) {
+      console.log(`Found ${githubPRMatches.length} GitHub PR links in description`);
+      return githubPRMatches;
+    }
+    
+    // Check for ADO PR links in description
+    const adoPRMatches = description.match(/https:\/\/dev\.azure\.com\/[^/]+\/[^/]+\/_git\/[^/]+\/pullrequest\/\d+/g);
+    if (adoPRMatches) {
+      console.log(`Found ${adoPRMatches.length} ADO PR links in description`);
+      return adoPRMatches;
+    }
+    
+    console.log(`No PR links found for work item ${workItem.id}`);
+    return [];
+  };
+
+  // Function to check if a work item is blocked based on tags
+  const isWorkItemBlocked = (workItem: WorkItem): boolean => {
+    if (!workItem.tags || workItem.tags.length === 0) {
+      return false;
+    }
+    
+    // Check if any tag contains "blocked" (case-insensitive)
+    return workItem.tags.some(tag => 
+      tag.toLowerCase().includes('blocked')
+    );
+  };
+  useEffect(() => {
+    // Auto-refresh event listener DISABLED to prevent page refreshing
+    console.log('Auto-refresh event listener disabled for Dashboard to prevent page refreshing');
+    return;
+
+    /* Original auto-refresh event listener commented out:
+    const handleDataRefresh = () => {
+      // Debounce multiple refresh requests
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+      
+      refreshTimeoutRef.current = setTimeout(() => {
+        console.log('🔄 Auto-refresh triggered by ADO service');
+        fetchDashboardData(true, selectedSprintId || undefined); // Force refresh when triggered externally
+      }, 1000); // 1 second debounce
+    };
+
+    window.addEventListener('ado-data-refresh', handleDataRefresh);
+
+    return () => {
+      window.removeEventListener('ado-data-refresh', handleDataRefresh);
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+    };
+    */
+  }, [fetchDashboardData, selectedSprintId]);
+
+  // Separate useEffect for initial load and sprint changes - RE-ENABLED
+  useEffect(() => {
+    console.log('⚡ ==================== USE EFFECT ====================');
+    console.log(`⚡ USE_EFFECT: Triggered with selectedSprintId: ${selectedSprintId}`);
+    
+    if (!selectedSprintId) {
+      // Initial load - get current sprint
+      console.log('⚡ USE_EFFECT: Initial load detected - fetching current sprint data');
+      fetchDashboardData();
+    } else {
+      // Sprint selection changed - fetch data for selected sprint
+      console.log(`⚡ USE_EFFECT: Sprint selection detected - fetching data for sprint ${selectedSprintId}`);
+      fetchDashboardData(false, selectedSprintId);
+    }
+    console.log('⚡ ====================================================');
+  }, [selectedSprintId, fetchDashboardData]);
+
+  if (isLoading) {
+    return (
+      <Box sx={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 400 }}>
+        <CircularProgress />
+        <Typography variant="body1" sx={{ ml: 2 }}>Loading dashboard...</Typography>
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box sx={{ flexGrow: 1 }}>
+        <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
+        <Button variant="contained" onClick={() => fetchDashboardData(true)}>
+          Retry
+        </Button>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ display: 'flex', position: 'relative' }}>
+      {/* Left Sidebar */}
+      <Drawer
+        anchor="left"
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        variant="temporary"
+        sx={{
+          '& .MuiDrawer-paper': {
+            width: 320,
+            backgroundColor: '#f8f9fa',
+            borderRight: '1px solid #dee2e6',
+            boxShadow: '2px 0 8px rgba(0,0,0,0.1)',
+          },
+        }}
+      >
+        {/* Sidebar Header */}
+        <Box sx={{ 
+          p: 3, 
+          background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 100%)',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+            � AI Scrum Agent
+          </Typography>
+          <IconButton 
+            onClick={() => setSidebarOpen(false)}
+            sx={{ color: 'white' }}
+          >
+            <ChevronLeftIcon />
+          </IconButton>
+        </Box>
+        
+        <Divider />
+        
+        {/* Navigation Menu */}
+        <List sx={{ p: 2 }}>
+          <Typography variant="subtitle2" sx={{ 
+            px: 2, 
+            py: 1, 
+            fontWeight: 600, 
+            color: '#495057',
+            textTransform: 'uppercase',
+            fontSize: '0.75rem',
+            letterSpacing: '0.5px'
+          }}>
+            Navigation
+          </Typography>
+          
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                backgroundColor: '#e3f2fd',
+                '&:hover': { backgroundColor: '#bbdefb' }
+              }}
+              onClick={() => {
+                // Current dashboard - just close sidebar
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <DashboardIcon sx={{ color: '#1976d2' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Dashboard" 
+                secondary="Current view"
+                primaryTypographyProps={{ fontWeight: 600, color: '#1976d2' }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Navigate to Analytics
+                window.location.href = '/analytics';
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <AnalyticsIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Analytics" 
+                secondary="Data insights"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Navigate to Work Items
+                window.location.href = '/work-items';
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <WorkItemsIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Work Items" 
+                secondary="Manage tasks"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Navigate to AI Assistant
+                window.location.href = '/ai-assistant';
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <AiAssistantIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="AI Assistant" 
+                secondary="Smart help"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Navigate to Team
+                window.location.href = '/team';
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <TeamIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Team" 
+                secondary="Team management"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Navigate to Settings
+                window.location.href = '/settings';
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <SettingsIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Settings" 
+                secondary="Configuration"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+        </List>
+        
+        <Divider />
+        
+        {/* Quick Actions */}
+        <List sx={{ p: 2 }}>
+          <Typography variant="subtitle2" sx={{ 
+            px: 2, 
+            py: 1, 
+            fontWeight: 600, 
+            color: '#495057',
+            textTransform: 'uppercase',
+            fontSize: '0.75rem',
+            letterSpacing: '0.5px'
+          }}>
+            Quick Actions
+          </Typography>
+          
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                // Refresh data with force refresh
+                fetchDashboardData(true);
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <DashboardIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Refresh Dashboard" 
+                secondary="Reload all data"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+          
+          <ListItem disablePadding sx={{ mb: 1 }}>
+            <ListItemButton 
+              sx={{ 
+                borderRadius: 2,
+                mx: 1,
+                '&:hover': { backgroundColor: '#e9ecef' }
+              }}
+              onClick={() => {
+                setMetricsFilter('all');
+                setSidebarOpen(false);
+              }}
+            >
+              <ListItemIcon>
+                <FilterListIcon sx={{ color: '#495057' }} />
+              </ListItemIcon>
+              <ListItemText 
+                primary="Reset Filters" 
+                secondary="Show all work items"
+                primaryTypographyProps={{ fontWeight: 500 }}
+                secondaryTypographyProps={{ fontSize: '0.8rem' }}
+              />
+            </ListItemButton>
+          </ListItem>
+        </List>
+        
+        <Divider />
+        
+        {/* Filter Controls */}
+        <Box sx={{ p: 2 }}>
+          <Typography variant="subtitle2" sx={{ 
+            px: 2, 
+            py: 1, 
+            fontWeight: 600, 
+            color: '#495057',
+            textTransform: 'uppercase',
+            fontSize: '0.75rem',
+            letterSpacing: '0.5px'
+          }}>
+            Filter Options
+          </Typography>
+          
+          <Box sx={{ p: 2 }}>
+            <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
+              Work Item Types:
+            </Typography>
+            <ToggleButtonGroup
+              value={metricsFilter}
+              exclusive
+              onChange={(event, newFilter) => {
+                if (newFilter !== null) {
+                  setMetricsFilter(newFilter);
+                }
+              }}
+              orientation="vertical"
+              size="small"
+              sx={{
+                width: '100%',
+                '& .MuiToggleButton-root': {
+                  width: '100%',
+                  justifyContent: 'flex-start',
+                  mb: 0.5,
+                  border: '1px solid #dee2e6',
+                  '&.Mui-selected': {
+                    backgroundColor: '#2c3e50',
+                    color: 'white',
+                  }
+                }
+              }}
+            >
+              <ToggleButton value="all">All Items</ToggleButton>
+              <ToggleButton value="user-story">User Stories</ToggleButton>
+              <ToggleButton value="bug">Bugs</ToggleButton>
+              <ToggleButton value="task">Tasks</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+        </Box>
+        
+        <Divider />
+        
+        {/* Sprint Info */}
+        {(currentSprint || selectedSprintId) && (
+          <Box sx={{ p: 2 }}>
+            <Typography variant="subtitle2" sx={{ 
+              px: 2, 
+              py: 1, 
+              fontWeight: 600, 
+              color: '#495057',
+              textTransform: 'uppercase',
+              fontSize: '0.75rem',
+              letterSpacing: '0.5px'
+            }}>
+              {selectedSprintId && currentSprint && selectedSprintId !== currentSprint.id.toString() ? 'Selected Sprint' : 'Current Sprint'}
+            </Typography>
+            
+            <Paper elevation={1} sx={{ p: 2, m: 2, backgroundColor: '#ffffff' }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                {(() => {
+                  const selectedSprint = getSelectedSprint();
+                  return selectedSprint ? selectedSprint.name : 'Unknown Sprint';
+                })()}
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#6c757d', mb: 1, display: 'block' }}>
+                {(() => {
+                  const selectedSprint = getSelectedSprint();
+                  return selectedSprint 
+                    ? `${new Date(selectedSprint.startDate).toLocaleDateString()} - ${new Date(selectedSprint.endDate).toLocaleDateString()}`
+                    : 'Date range unknown';
+                })()}
+              </Typography>
+              {dataCacheRef.current && (
+                <Chip 
+                  label={`Cached ${Math.round((Date.now() - dataCacheRef.current.timestamp) / 60000)}m ago`}
+                  size="small"
+                  sx={{ 
+                    fontSize: '0.7rem',
+                    backgroundColor: '#e8f5e8',
+                    color: '#2e7d32',
+                    mb: 1,
+                    mr: 1
+                  }}
+                />
+              )}
+              {selectedSprintId && currentSprint && selectedSprintId !== currentSprint.id.toString() && (
+                <Chip 
+                  label="Historical Data"
+                  size="small"
+                  sx={{ 
+                    fontSize: '0.7rem',
+                    backgroundColor: '#fff3cd',
+                    color: '#856404'
+                  }}
+                />
+              )}
+            </Paper>
+          </Box>
+        )}
+      </Drawer>
+
+      {/* Main Content */}
+      <Box sx={{ 
+        flexGrow: 1, 
+        backgroundColor: '#f5f6fa', 
+        minHeight: '100vh', 
+        p: 3,
+        transition: 'margin-left 0.3s ease-in-out'
+      }}>
+        {/* Floating Action Button for Sidebar Toggle */}
+        <Fab
+          size="medium"
+          sx={{
+            position: 'fixed',
+            top: 100,
+            left: 16,
+            zIndex: 1000,
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            color: 'white',
+            '&:hover': {
+              background: 'linear-gradient(135deg, #764ba2 0%, #667eea 100%)',
+              transform: 'scale(1.1)',
+            },
+            transition: 'all 0.3s ease-in-out',
+            boxShadow: '0 4px 20px rgba(102, 126, 234, 0.4)',
+          }}
+          onClick={() => setSidebarOpen(true)}
+        >
+          <MenuIcon />
+        </Fab>
+      {/* Sprint Filter Section */}
+      <Paper elevation={3} sx={{ 
+        p: 4, 
+        mb: 4, 
+        borderRadius: 3,
+        background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 100%)',
+        border: '1px solid #34495e'
+      }}>
+        
+        <Grid container spacing={3} alignItems="center" justifyContent="center">
+          <Grid item xs={12} md={6}>
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h6" sx={{ mr: 2, fontWeight: 500, color: '#ecf0f1' }}>
+                Active Sprint:
+              </Typography>
+              <Typography variant="h6" sx={{ 
+                background: 'rgba(255,255,255,0.15)',
+                px: 3,
+                py: 1.5,
+                borderRadius: 2,
+                fontWeight: 600,
+                color: '#ffffff',
+                border: '1px solid rgba(255,255,255,0.2)',
+                backdropFilter: 'blur(10px)'
+              }}>
+                {currentSprint 
+                  ? `${currentSprint.name}` 
+                  : 'No active sprint found'}
+              </Typography>
+              {selectedSprintId && currentSprint && selectedSprintId !== currentSprint.id.toString() && (
+                <Chip 
+                  label="Viewing different sprint"
+                  size="small"
+                  sx={{ 
+                    ml: 2,
+                    backgroundColor: 'rgba(255, 193, 7, 0.9)',
+                    color: '#000',
+                    fontWeight: 600
+                  }}
+                />
+              )}
+            </Box>
+          </Grid>
+          
+          <Grid item xs={12} md={6}>
+            <FormControl 
+              size="small" 
+              disabled={sprintLoading}
+              sx={{ 
+                minWidth: 300,
+                '& .MuiInputLabel-root': { color: '#ecf0f1' },
+                '& .MuiOutlinedInput-root': {
+                  color: '#ffffff',
+                  backgroundColor: 'rgba(255,255,255,0.1)',
+                  borderRadius: 2,
+                  '& fieldset': { borderColor: 'rgba(255,255,255,0.3)' },
+                  '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.5)' },
+                  '&.Mui-focused fieldset': { borderColor: '#ffffff' }
+                },
+                '& .MuiSelect-icon': { color: '#ecf0f1' }
+              }}
+            >
+              <InputLabel>Select Sprint</InputLabel>
+              <Select
+                value={selectedSprintId || ''}
+                label="Select Sprint"
+                onChange={handleSprintChange}
+                MenuProps={{
+                  PaperProps: {
+                    sx: {
+                      backgroundColor: '#2c3e50',
+                      '& .MuiMenuItem-root': {
+                        color: '#ecf0f1',
+                        '&:hover': { backgroundColor: '#34495e' },
+                        '&.Mui-selected': { 
+                          backgroundColor: '#3498db',
+                          '&:hover': { backgroundColor: '#2980b9' }
+                        }
+                      }
+                    }
+                  }
+                }}
+              >
+                {availableSprints.map((sprint) => (
+                  <MenuItem key={sprint.id} value={sprint.id.toString()}>
+                    {sprint.name} ({new Date(sprint.startDate).toLocaleDateString()} - {new Date(sprint.endDate).toLocaleDateString()})
+                  </MenuItem>
+                ))}
+              </Select>
+              {sprintLoading && (
+                <Box sx={{ 
+                  position: 'absolute', 
+                  right: 40, 
+                  top: '50%', 
+                  transform: 'translateY(-50%)',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}>
+                  <CircularProgress size={20} sx={{ color: '#ecf0f1' }} />
+                </Box>
+              )}
+            </FormControl>
+          </Grid>
+        </Grid>
+      </Paper>
+      
+      <Grid container spacing={3}>
+        {/* Sprint Task Summary */}
+        <Grid item xs={12}>
+          <Item>
+            {/* Header Section */}
+            <Box sx={{ 
+              background: 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)',
+              borderRadius: 2,
+              p: 3,
+              mb: 3,
+              boxShadow: '0 4px 12px rgba(52, 152, 219, 0.2)'
+            }}>
+              <Typography variant="h4" component="h2" sx={{ 
+                color: '#ffffff', 
+                fontWeight: 600,
+                textAlign: 'center',
+                mb: 1,
+                letterSpacing: '0.5px'
+              }}>
+                📊 Sprint Task Summary
+              </Typography>
+              <Typography variant="body1" sx={{ 
+                color: 'rgba(255,255,255,0.9)', 
+                textAlign: 'center',
+                fontSize: '1.1rem'
+              }}>
+                Real-time overview of current sprint progress and work item distribution
+              </Typography>
+            </Box>
+            
+            {/* Metrics Filter */}
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="body1" sx={{ mb: 2, fontWeight: 600, color: '#495057' }}>Filter by Work Item Type:</Typography>
+              <ToggleButtonGroup
+                value={metricsFilter}
+                exclusive
+                onChange={(event, newFilter) => {
+                  if (newFilter !== null) {
+                    setMetricsFilter(newFilter);
+                  }
+                }}
+                aria-label="metrics filter"
+                size="medium"
+                sx={{
+                  '& .MuiToggleButton-root': {
+                    borderRadius: 2,
+                    mx: 0.5,
+                    px: 3,
+                    py: 1,
+                    fontWeight: 600,
+                    textTransform: 'none',
+                    border: '2px solid #e0e0e0',
+                    '&:hover': {
+                      backgroundColor: '#f5f5f5',
+                      transform: 'translateY(-1px)',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                    },
+                    '&.Mui-selected': {
+                      backgroundColor: '#2c3e50',
+                      color: 'white',
+                      border: '2px solid #2c3e50',
+                      '&:hover': {
+                        backgroundColor: '#1a252f',
+                      }
+                    },
+                    transition: 'all 0.2s ease-in-out'
+                  }
+                }}
+              >
+                <ToggleButton value="all" aria-label="all items">
+                  All Items
+                </ToggleButton>
+                <ToggleButton value="user-story" aria-label="user stories">
+                  User Stories
+                </ToggleButton>
+                <ToggleButton value="bug" aria-label="bugs">
+                  Bugs
+                </ToggleButton>
+                <ToggleButton value="task" aria-label="tasks">
+                  Tasks
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+            
+            {/* Filtered Metrics Display */}
+            {(() => {
+              const getFilteredItems = () => {
+                // Get all Tasks that belong to User Stories and Bugs
+                const tasksFromUserStoriesAndBugs = workItems.filter(item => {
+                  if (item.type !== 'Task') return false;
+                  
+                  // Check if this task has a parent that is a User Story or Bug
+                  const hasValidParent = workItems.some(parentItem => 
+                    (parentItem.type === 'User Story' || parentItem.type === 'Bug') &&
+                    item.parentId === parentItem.id
+                  );
+                  
+                  return hasValidParent;
+                });
+                
+                switch (metricsFilter) {
+                  case 'user-story':
+                    // Show tasks that belong to User Stories
+                    return tasksFromUserStoriesAndBugs.filter(task => {
+                      const parent = workItems.find(item => item.id === task.parentId);
+                      return parent?.type === 'User Story';
+                    });
+                  case 'bug':
+                    // Show tasks that belong to Bugs
+                    return tasksFromUserStoriesAndBugs.filter(task => {
+                      const parent = workItems.find(item => item.id === task.parentId);
+                      return parent?.type === 'Bug';
+                    });
+                  case 'task':
+                    // Show all tasks from User Stories and Bugs
+                    return tasksFromUserStoriesAndBugs;
+                  default:
+                    // Show all tasks from User Stories and Bugs
+                    return tasksFromUserStoriesAndBugs;
+                }
+              };
+              
+              const filteredItems = getFilteredItems();
+              const completedFiltered = filteredItems.filter(item => item.state === 'Done' || item.state === 'Closed');
+              const inProgressFiltered = filteredItems.filter(item => item.state === 'Active' || item.state === 'In Progress');
+              
+              // For blocked items in Sprint Task Summary, show User Stories and Bugs (not tasks)
+              const blockedUserStoriesAndBugs = workItems.filter(item => 
+                (item.type === 'User Story' || item.type === 'Bug') &&
+                (item.state === 'Blocked' || isWorkItemBlocked(item))
+              );
+              
+              // Use consistent filtering for both planned count and completed count
+              const plannedCount = filteredItems.length;
+              
+              // Ensure percentage never exceeds 100%
+              const progressPercentage = plannedCount > 0 ? Math.min(100, Math.round((completedFiltered.length / plannedCount) * 100)) : 0;
+              
+              return (
+                <>
+                  {/* Progress Overview */}
+                  <Paper elevation={4} sx={{ 
+                    p: 4, 
+                    mb: 3, 
+                    borderRadius: 3,
+                    background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                    border: '1px solid #e9ecef',
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.08)'
+                  }}>
+                    <Box sx={{ position: 'relative', zIndex: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+                        <Typography variant="h5" sx={{ fontWeight: 600, color: '#2c3e50' }}>
+                          🚀 Sprint Progress Overview
+                        </Typography>
+                        <Chip 
+                          label={`${progressPercentage}% Complete`}
+                          sx={{ 
+                            fontWeight: 600,
+                            fontSize: '0.9rem',
+                            background: progressPercentage >= 75 
+                              ? 'linear-gradient(135deg, #27ae60 0%, #2ecc71 100%)'
+                              : progressPercentage >= 50 
+                              ? 'linear-gradient(135deg, #f39c12 0%, #e67e22 100%)'
+                              : 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)',
+                            color: 'white',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                          }}
+                        />
+                      </Box>
+                      <Typography variant="body1" sx={{ 
+                        mb: 3, 
+                        color: '#5a6c7d',
+                        fontWeight: 500,
+                        fontSize: '1.1rem'
+                      }}>
+                        {metricsFilter === 'all' ? 'Tasks from User Stories & Bugs' : 
+                         metricsFilter === 'user-story' ? 'Tasks from User Stories' :
+                         metricsFilter === 'bug' ? 'Tasks from Bugs' :
+                         'All Tasks from User Stories & Bugs'} • {plannedCount} total items
+                      </Typography>
+                      <LinearProgress 
+                        variant="determinate" 
+                        value={progressPercentage} 
+                        sx={{ 
+                          height: 12,
+                          borderRadius: 6,
+                          backgroundColor: '#ecf0f1',
+                          '& .MuiLinearProgress-bar': {
+                            borderRadius: 6,
+                            background: progressPercentage >= 75 
+                              ? 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)'
+                              : progressPercentage >= 50 
+                              ? 'linear-gradient(90deg, #f39c12 0%, #e67e22 100%)'
+                              : 'linear-gradient(90deg, #e74c3c 0%, #c0392b 100%)',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                          }
+                        }} 
+                      />
+                      <Typography variant="body2" sx={{ 
+                        mt: 2, 
+                        color: '#7f8c8d',
+                        textAlign: 'center',
+                        fontWeight: 500
+                      }}>
+                        {completedFiltered.length} completed • {inProgressFiltered.length} in progress • {blockedUserStoriesAndBugs.length} blocked (User Stories/Bugs)
+                      </Typography>
+                    </Box>
+                  </Paper>
+                  {/* Professional Metric Cards */}
+                  <Grid container spacing={3} sx={{ mb: 4 }}>
+                    {/* Planned Card */}
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Paper 
+                        elevation={4} 
+                        sx={{ 
+                          p: 3, 
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          borderRadius: 3,
+                          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                          color: 'white',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          boxShadow: '0 8px 32px rgba(102, 126, 234, 0.25)',
+                          transition: 'all 0.3s ease-in-out',
+                          '&:hover': {
+                            transform: 'translateY(-4px)',
+                            boxShadow: '0 12px 40px rgba(102, 126, 234, 0.35)'
+                          },
+                          '&::before': {
+                            content: '""',
+                            position: 'absolute',
+                            top: 0,
+                            right: 0,
+                            width: '100px',
+                            height: '100px',
+                            background: 'rgba(255,255,255,0.1)',
+                            borderRadius: '50%',
+                            transform: 'translate(30px, -30px)'
+                          }
+                        }}
+                        onClick={() => {
+                          if (filteredItems.length > 0) {
+                            handleGroupClick('Sprint Task Summary - Planned', filteredItems);
+                          }
+                        }}
+                      >
+                        <Box sx={{ position: 'relative', zIndex: 1 }}>
+                          <Typography variant="h3" sx={{ fontWeight: 700, mb: 1 }}>
+                            {plannedCount}
+                          </Typography>
+                          <Typography variant="h6" sx={{ 
+                            fontWeight: 500, 
+                            mb: 1,
+                            opacity: 0.9,
+                            fontSize: '1rem'
+                          }}>
+                            Planned Items
+                          </Typography>
+                          <Typography variant="caption" sx={{ 
+                            opacity: 0.8,
+                            fontWeight: 400,
+                            fontSize: '0.8rem'
+                          }}>
+                            Click to view details
+                          </Typography>
+                        </Box>
+                      </Paper>
+                    </Grid>
+
+                    {/* Completed Card */}
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Paper 
+                        elevation={4} 
+                        sx={{ 
+                          p: 3, 
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          borderRadius: 3,
+                          background: 'linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%)',
+                          color: 'white',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          boxShadow: '0 8px 32px rgba(86, 171, 47, 0.25)',
+                          transition: 'all 0.3s ease-in-out',
+                          '&:hover': {
+                            transform: 'translateY(-4px)',
+                            boxShadow: '0 12px 40px rgba(86, 171, 47, 0.35)'
+                          },
+                          '&::before': {
+                            content: '""',
+                            position: 'absolute',
+                            top: 0,
+                            right: 0,
+                            width: '100px',
+                            height: '100px',
+                            background: 'rgba(255,255,255,0.1)',
+                            borderRadius: '50%',
+                            transform: 'translate(30px, -30px)'
+                          }
+                        }}
+                        onClick={() => {
+                          if (completedFiltered.length > 0) {
+                            handleGroupClick('Sprint Task Summary - Completed', completedFiltered);
+                          }
+                        }}
+                      >
+                        <Box sx={{ position: 'relative', zIndex: 1 }}>
+                          <Typography variant="h3" sx={{ fontWeight: 700, mb: 1 }}>
+                            {completedFiltered.length}
+                          </Typography>
+                          <Typography variant="h6" sx={{ 
+                            fontWeight: 500, 
+                            mb: 1,
+                            opacity: 0.9,
+                            fontSize: '1rem'
+                          }}>
+                            Completed
+                          </Typography>
+                          <Typography variant="caption" sx={{ 
+                            opacity: 0.8,
+                            fontWeight: 400,
+                            fontSize: '0.8rem'
+                          }}>
+                            Click to view details
+                          </Typography>
+                        </Box>
+                      </Paper>
+                    </Grid>
+
+                    {/* In Progress Card */}
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Paper 
+                        elevation={4} 
+                        sx={{ 
+                          p: 3, 
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          borderRadius: 3,
+                          background: 'linear-gradient(135deg, #4b79a1 0%, #283e51 100%)',
+                          color: 'white',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          boxShadow: '0 8px 32px rgba(75, 121, 161, 0.25)',
+                          transition: 'all 0.3s ease-in-out',
+                          '&:hover': {
+                            transform: 'translateY(-4px)',
+                            boxShadow: '0 12px 40px rgba(75, 121, 161, 0.35)'
+                          },
+                          '&::before': {
+                            content: '""',
+                            position: 'absolute',
+                            top: 0,
+                            right: 0,
+                            width: '100px',
+                            height: '100px',
+                            background: 'rgba(255,255,255,0.1)',
+                            borderRadius: '50%',
+                            transform: 'translate(30px, -30px)'
+                          }
+                        }}
+                        onClick={() => {
+                          if (inProgressFiltered.length > 0) {
+                            handleGroupClick('Sprint Task Summary - In Progress', inProgressFiltered);
+                          }
+                        }}
+                      >
+                        <Box sx={{ position: 'relative', zIndex: 1 }}>
+                          <Typography variant="h3" sx={{ fontWeight: 700, mb: 1 }}>
+                            {inProgressFiltered.length}
+                          </Typography>
+                          <Typography variant="h6" sx={{ 
+                            fontWeight: 500, 
+                            mb: 1,
+                            opacity: 0.9,
+                            fontSize: '1rem'
+                          }}>
+                            In Progress
+                          </Typography>
+                          <Typography variant="caption" sx={{ 
+                            opacity: 0.8,
+                            fontWeight: 400,
+                            fontSize: '0.8rem'
+                          }}>
+                            Click to view details
+                          </Typography>
+                        </Box>
+                      </Paper>
+                    </Grid>
+
+                    {/* Blocked Card */}
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Paper 
+                        elevation={4} 
+                        sx={{ 
+                          p: 3, 
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          borderRadius: 3,
+                          background: 'linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%)',
+                          color: 'white',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          boxShadow: '0 8px 32px rgba(255, 107, 107, 0.25)',
+                          transition: 'all 0.3s ease-in-out',
+                          '&:hover': {
+                            transform: 'translateY(-4px)',
+                            boxShadow: '0 12px 40px rgba(255, 107, 107, 0.35)'
+                          },
+                          '&::before': {
+                            content: '""',
+                            position: 'absolute',
+                            top: 0,
+                            right: 0,
+                            width: '100px',
+                            height: '100px',
+                            background: 'rgba(255,255,255,0.1)',
+                            borderRadius: '50%',
+                            transform: 'translate(30px, -30px)'
+                          }
+                        }}
+                        onClick={() => {
+                          if (blockedUserStoriesAndBugs.length > 0) {
+                            handleGroupClick('Sprint Task Summary - Blocked User Stories & Bugs', blockedUserStoriesAndBugs);
+                          }
+                        }}
+                      >
+                        <Box sx={{ position: 'relative', zIndex: 1 }}>
+                          <Typography variant="h3" sx={{ fontWeight: 700, mb: 1 }}>
+                            {blockedUserStoriesAndBugs.length}
+                          </Typography>
+                          <Typography variant="h6" sx={{ 
+                            fontWeight: 500, 
+                            mb: 1,
+                            opacity: 0.9,
+                            fontSize: '1rem'
+                          }}>
+                            Blocked Stories/Bugs
+                          </Typography>
+                          <Typography variant="caption" sx={{ 
+                            opacity: 0.8,
+                            fontWeight: 400,
+                            fontSize: '0.8rem'
+                          }}>
+                            Click to view details
+                          </Typography>
+                        </Box>
+                      </Paper>
+                    </Grid>
+                  </Grid>
+                </>
+              );
+            })()}
+          </Item>
+        </Grid>
+
+        {/* Work Item Categories - Separate Section */}
+        <Grid item xs={12}>
+          <Item>
+            {/* Work Item Categories */}
+            <Box sx={{ mt: 0 }}>
+              <Paper elevation={4} sx={{ 
+                p: 4, 
+                mb: 4, 
+                background: 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)',
+                borderRadius: 3,
+                border: '1px solid #dee2e6',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.08)'
+              }}>
+                <Box sx={{ textAlign: 'center', position: 'relative' }}>
+                  <Typography variant="h4" sx={{ 
+                    fontWeight: 700, 
+                    mb: 2,
+                    color: '#2c3e50',
+                    fontSize: '2rem'
+                  }}>
+                    📊 Work Item Categories
+                  </Typography>
+                  <Typography variant="body1" sx={{ 
+                    color: '#5a6c7d', 
+                    fontSize: '1.1rem',
+                    fontWeight: 500,
+                    maxWidth: '600px',
+                    mx: 'auto'
+                  }}>
+                    Comprehensive breakdown of tasks from User Stories and Bugs by category and completion status for strategic oversight
+                  </Typography>
+                </Box>
+              </Paper>
+              <Grid container spacing={3}>
+                {(() => {
+                  const enabledCategories = getEnabledCategories();
+                  
+                  // Filter work items to only include tasks from User Stories and Bugs
+                  const tasksFromUserStoriesAndBugs = workItems.filter(item => {
+                    if (item.type !== 'Task') return false;
+                    
+                    // Check if this task has a parent that is a User Story or Bug
+                    const hasValidParent = workItems.some(parentItem => 
+                      (parentItem.type === 'User Story' || parentItem.type === 'Bug') &&
+                      item.parentId === parentItem.id
+                    );
+                    
+                    return hasValidParent;
+                  });
+                  
+                  const groupedItems = groupWorkItemsByCategory(tasksFromUserStoriesAndBugs);
+                  
+                  return enabledCategories.map((category) => {
+                    const categoryItems = groupedItems[category.id] || [];
+                    const completedItems = categoryItems.filter(item => item.state === 'Done' || item.state === 'Closed');
+                    // Check for blocked items by both state and tags
+                    const blockedItems = categoryItems.filter(item => 
+                      item.state === 'Blocked' || isWorkItemBlocked(item)
+                    );
+                    const inProgressItems = categoryItems.filter(item => item.state === 'Active' || item.state === 'In Progress');
+                    const remainingItems = categoryItems.length - completedItems.length;
+                    
+                    // Ensure percentages total 100%
+                    const totalItems = Math.max(categoryItems.length, 1); // Avoid division by zero
+                    let completionPercentage = Math.round((completedItems.length / totalItems) * 100);
+                    let progressPercentage = Math.round((inProgressItems.length / totalItems) * 100);
+                    let blockedPercentage = Math.round((blockedItems.length / totalItems) * 100);
+                    let remainingPercentage = 100 - completionPercentage - progressPercentage - blockedPercentage;
+                    
+                    // Adjust if total doesn't equal 100% due to rounding
+                    const currentTotal = completionPercentage + progressPercentage + blockedPercentage + remainingPercentage;
+                    if (currentTotal !== 100 && categoryItems.length > 0) {
+                      remainingPercentage += (100 - currentTotal);
+                    }
+                    
+                    return (
+                      <Grid item xs={12} md={6} key={category.id}>
+                        <Paper elevation={2} sx={{ 
+                          p: 3, 
+                          borderRadius: 1,
+                          background: '#ffffff',
+                          border: '1px solid #e0e0e0',
+                          '&:hover': {
+                            transform: 'translateY(-1px)',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                          },
+                          transition: 'all 0.2s ease-in-out'
+                        }}>
+                          <Typography variant="h5" sx={{ 
+                            fontWeight: 600, 
+                            mb: 2, 
+                            textAlign: 'center', 
+                            color: category.color
+                          }}>
+                            {category.name}
+                          </Typography>
+                          
+                          {/* Total Count Card */}
+                          <Paper 
+                            elevation={1} 
+                            sx={{ 
+                              p: 2, 
+                              mb: 2, 
+                              background: '#f8f9fa',
+                              cursor: 'pointer',
+                              textAlign: 'center',
+                              borderRadius: 1,
+                              border: `1px solid ${category.color}`,
+                              '&:hover': {
+                                backgroundColor: '#e9ecef',
+                                transform: 'translateY(-1px)',
+                              },
+                              transition: 'all 0.2s ease-in-out'
+                            }}
+                            onClick={() => handleGroupClick(`${category.name} Items - Total`, categoryItems)}
+                          >
+                            <Typography variant="h4" sx={{ fontWeight: 600, mb: 1, color: category.color }}>
+                              {categoryItems.length}
+                            </Typography>
+                            <Typography variant="h6" sx={{ fontWeight: 500, color: '#2c3e50' }}>
+                              Total {category.name} Items
+                            </Typography>
+                            <Typography variant="caption" sx={{ 
+                              color: '#6c757d',
+                              fontWeight: 400
+                            }}>
+                              Click to view details
+                            </Typography>
+                          </Paper>
+
+                          {/* Progress Overview */}
+                          <Box sx={{ mb: 2 }}>
+                            <Typography variant="h6" sx={{ 
+                              mb: 2, 
+                              fontWeight: 600, 
+                              textAlign: 'center',
+                              color: '#2c3e50'
+                            }}>
+                              Progress Breakdown
+                            </Typography>
+                            
+                            {/* Completed */}
+                            <Paper 
+                              elevation={0} 
+                              sx={{ 
+                                p: 1.5, 
+                                mb: 1, 
+                                backgroundColor: '#ffffff',
+                                border: '1px solid #28a745',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                '&:hover': {
+                                  backgroundColor: '#f8f9fa',
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                                },
+                                transition: 'all 0.2s ease-in-out'
+                              }}
+                              onClick={() => handleGroupClick(`${category.name} Items - Completed`, completedItems)}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Typography variant="body2" sx={{ fontWeight: 600, color: '#495057' }}>
+                                  ✅ Completed: {completedItems.length}
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 600, color: '#28a745' }}>
+                                  {completionPercentage}%
+                                </Typography>
+                              </Box>
+                            </Paper>
+
+                            {/* In Progress */}
+                            <Paper 
+                              elevation={0} 
+                              sx={{ 
+                                p: 1.5, 
+                                mb: 1, 
+                                backgroundColor: '#ffffff',
+                                border: '1px solid #ffc107',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                '&:hover': {
+                                  backgroundColor: '#ffcc02',
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: 1,
+                                },
+                                transition: 'all 0.2s ease-in-out'
+                              }}
+                              onClick={() => handleGroupClick(`${category.name} Items - In Progress`, inProgressItems)}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                                  🔄 In Progress: {inProgressItems.length}
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold', color: '#f57c00' }}>
+                                  {progressPercentage}%
+                                </Typography>
+                              </Box>
+                            </Paper>
+
+                            {/* Remaining */}
+                            <Paper 
+                              elevation={0} 
+                              sx={{ 
+                                p: 1.5, 
+                                mb: 1, 
+                                backgroundColor: '#e3f2fd',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                '&:hover': {
+                                  backgroundColor: '#bbdefb',
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: 1,
+                                },
+                                transition: 'all 0.2s ease-in-out'
+                              }}
+                              onClick={() => handleGroupClick(`${category.name} Items - Remaining`, categoryItems.filter(item => item.state !== 'Done' && item.state !== 'Closed'))}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                                  📋 Remaining: {remainingItems}
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold', color: '#1976d2' }}>
+                                  {remainingPercentage}%
+                                </Typography>
+                              </Box>
+                            </Paper>
+
+                            {/* Blocked */}
+                            <Paper 
+                              elevation={0} 
+                              sx={{ 
+                                p: 1.5, 
+                                mb: 1, 
+                                backgroundColor: '#ffcdd2',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                '&:hover': {
+                                  backgroundColor: '#ef9a9a',
+                                  transform: 'translateY(-1px)',
+                                  boxShadow: 1,
+                                },
+                                transition: 'all 0.2s ease-in-out'
+                              }}
+                              onClick={() => handleGroupClick(`${category.name} Items - Blocked`, blockedItems)}
+                            >
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                                  🚫 Blocked: {blockedItems.length}
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 'bold', color: '#d32f2f' }}>
+                                  {blockedPercentage}%
+                                </Typography>
+                              </Box>
+                            </Paper>
+                          </Box>
+
+                          {/* Total percentage verification */}
+                          <Box sx={{ mt: 1, p: 1, backgroundColor: '#f0f0f0', borderRadius: 1, textAlign: 'center' }}>
+                            <Typography variant="caption" sx={{ fontWeight: 'bold' }}>
+                              Total: {completionPercentage + progressPercentage + remainingPercentage + blockedPercentage}%
+                            </Typography>
+                          </Box>
+                        </Paper>
+                      </Grid>
+                    );
+                  });
+                })()}
+              </Grid>
+            </Box>
+          </Item>
+        </Grid>
+
+        {/* Executive Summary with Activity Monitoring */}
+        <Grid item xs={12}>
+          <ExecutiveSummaryWithActivityMonitoring 
+            workItems={workItems} 
+            isLoading={isLoading}
+          />
+        </Grid>
+            <Box sx={{ 
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              borderRadius: 3,
+              p: 4,
+              mb: 4,
+              color: 'white',
+              position: 'relative',
+              overflow: 'hidden',
+              boxShadow: '0 12px 40px rgba(102, 126, 234, 0.3)',
+              '&::before': {
+                content: '""',
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: '200px',
+                height: '200px',
+                background: 'rgba(255,255,255,0.1)',
+                borderRadius: '50%',
+                transform: 'translate(50px, -50px)'
+              }
+            }}>
+              <Box sx={{ position: 'relative', zIndex: 1, textAlign: 'center' }}>
+                <Typography variant="h4" component="h2" sx={{ 
+                  fontWeight: 700,
+                  mb: 1.5,
+                  fontSize: '1.8rem'
+                }}>
+                  📈 Executive Summary
+                </Typography>
+                <Typography variant="body1" sx={{ 
+                  opacity: 0.9,
+                  fontSize: '1rem',
+                  fontWeight: 500,
+                  maxWidth: '700px',
+                  mx: 'auto'
+                }}>
+                  Strategic overview of user stories and defects organized by business priority for executive decision-making
+                </Typography>
+              </Box>
+            </Box>
+            
+            {/* Priority-based Metrics */}
+            {(() => {
+              const parentItems = workItems.filter(item => 
+                item.type === 'User Story' || item.type === 'Bug'
+              );
+              
+              const p1Items = parentItems.filter(item => item.priority === 1);
+              const p2Items = parentItems.filter(item => item.priority === 2);
+              const p3Items = parentItems.filter(item => item.priority === 3);
+              const otherItems = parentItems.filter(item => !item.priority || item.priority > 3);
+              
+              const getPriorityMetrics = (items: WorkItem[]) => {
+                // Get all child tasks for these parent items
+                const parentIds = items.map(item => item.id);
+                const childTasks = workItems.filter(item => 
+                  item.type === 'Task' && item.parentId && parentIds.includes(item.parentId)
+                );
+                
+                // Separate bugs and user stories
+                const bugs = items.filter(item => item.type === 'Bug');
+                const userStories = items.filter(item => item.type === 'User Story');
+                
+                return {
+                  total: items.length,
+                  completed: items.filter(item => item.state === 'Done' || item.state === 'Closed').length,
+                  inProgress: items.filter(item => item.state === 'Active' || item.state === 'In Progress').length,
+                  // Check for blocked items by both state and tags
+                  blocked: items.filter(item => item.state === 'Blocked' || isWorkItemBlocked(item)).length,
+                  withPRs: items.filter(item => getPRLinks(item).length > 0).length,
+                  // Bug and User Story breakdown
+                  bugs: bugs.length,
+                  userStories: userStories.length,
+                  bugsCompleted: bugs.filter(item => item.state === 'Done' || item.state === 'Closed').length,
+                  userStoriesCompleted: userStories.filter(item => item.state === 'Done' || item.state === 'Closed').length,
+                  // Child task metrics
+                  totalTasks: childTasks.length,
+                  completedTasks: childTasks.filter(task => task.state === 'Done' || task.state === 'Closed').length,
+                  inProgressTasks: childTasks.filter(task => task.state === 'Active' || task.state === 'In Progress').length,
+                  // Check for blocked child tasks by both state and tags
+                  blockedTasks: childTasks.filter(task => task.state === 'Blocked' || isWorkItemBlocked(task)).length,
+                  pendingTasks: childTasks.filter(task => task.state !== 'Done' && task.state !== 'Closed').length,
+                  // URLs
+                  adoUrls: items.map(item => getAdoWorkItemUrl(item)),
+                  prUrls: items.flatMap(item => getPRLinks(item)),
+                  items: items,
+                  childTasks: childTasks
+                };
+              };
+              
+              const p1Metrics = getPriorityMetrics(p1Items);
+              const p2Metrics = getPriorityMetrics(p2Items);
+              const p3Metrics = getPriorityMetrics(p3Items);
+              const otherMetrics = getPriorityMetrics(otherItems);
+              
+              return (
+                <Grid container spacing={3}>
+                  {/* P1 Priority */}
+                  <Grid item xs={12} md={3}>
+                    <Paper 
+                      elevation={3} 
+                      sx={{ 
+                        p: 3, 
+                        background: 'linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%)',
+                        borderLeft: '6px solid #dc3545',
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        position: 'relative',
+                        overflow: 'hidden',
+                        '&:hover': {
+                          background: 'linear-gradient(135deg, #ffcdd2 0%, #ef9a9a 100%)',
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 25px rgba(220, 53, 69, 0.3)',
+                        },
+                        '&::before': {
+                          content: '""',
+                          position: 'absolute',
+                          top: 0,
+                          right: 0,
+                          width: '100px',
+                          height: '100px',
+                          background: 'radial-gradient(circle, rgba(220, 53, 69, 0.1) 0%, transparent 70%)',
+                          borderRadius: '50%',
+                          transform: 'translate(50%, -50%)'
+                        },
+                        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                      }}
+                      onClick={() => handleGroupClick('P1 Priority Items (User Stories & Bugs)', p1Metrics.items)}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, position: 'relative', zIndex: 1 }}>
+                        <Chip 
+                          label="P1" 
+                          sx={{ 
+                            backgroundColor: '#dc3545', 
+                            color: 'white', 
+                            fontWeight: 700,
+                            fontSize: '0.875rem',
+                            mr: 1,
+                            boxShadow: '0 2px 8px rgba(220, 53, 69, 0.3)'
+                          }}
+                        />
+                        <Typography variant="h6" sx={{ fontWeight: 700, color: '#dc3545' }}>
+                          Critical Priority
+                        </Typography>
+                      </Box>
+                      
+                      <Typography variant="h3" sx={{ mb: 2, color: '#dc3545', fontWeight: 800, position: 'relative', zIndex: 1 }}>
+                        {p1Metrics.total}
+                      </Typography>
+                      
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mb: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          ✅ Completed: {p1Metrics.completed}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔄 In Progress: {p1Metrics.inProgress}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🚫 Blocked: {p1Metrics.blocked}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔗 With PRs: {p1Metrics.withPRs}
+                        </Typography>
+                      </Box>
+
+                      {/* Work Item Type Breakdown */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', minHeight: 32 }}>
+                        {/* Hidden User Story/Bug Summary sections
+                        {p1Metrics.bugs > 0 ? (
+                          <Chip 
+                            label={`🐛 ${p1Metrics.bugs} Bug${p1Metrics.bugs > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#dc3545', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="🐛 0 Bugs"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#dc3545', 
+                              color: '#dc3545', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        {p1Metrics.userStories > 0 ? (
+                          <Chip 
+                            label={`📖 ${p1Metrics.userStories} Story${p1Metrics.userStories > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#17a2b8', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="📖 0 Stories"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#17a2b8', 
+                              color: '#17a2b8', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        */}
+                      </Box>
+
+                      {/* Hidden Child Tasks Metrics section
+                      <Box sx={{ p: 2, backgroundColor: '#ffcdd2', borderRadius: 1, mb: 2 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>
+                          📋 Child Tasks ({p1Metrics.totalTasks})
+                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            ✅ Completed: {p1Metrics.completedTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🔄 In Progress: {p1Metrics.inProgressTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            ⏳ Pending: {p1Metrics.pendingTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🚫 Blocked: {p1Metrics.blockedTasks}
+                          </Typography>
+                        </Box>
+                      </Box>
+                      */}
+
+                      {/* URLs Section */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                        {p1Metrics.adoUrls && p1Metrics.adoUrls.length > 0 ? (
+                          <Button
+                            href={p1Metrics.adoUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 1 }}
+                          >
+                            ADO ({p1Metrics.adoUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No ADO Links" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                        {p1Metrics.prUrls && p1Metrics.prUrls.length > 0 ? (
+                          <Button
+                            href={p1Metrics.prUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="contained"
+                            sx={{ 
+                              fontSize: '0.7rem', 
+                              minWidth: 'auto', 
+                              px: 1,
+                              backgroundColor: '#28a745',
+                              '&:hover': { backgroundColor: '#1e7e34' }
+                            }}
+                          >
+                            PR ({p1Metrics.prUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No PRs" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                      </Box>
+                      
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                        Click to view all P1 items
+                      </Typography>
+                    </Paper>
+                  </Grid>
+
+                  {/* P2 Priority */}
+                  <Grid item xs={12} md={3}>
+                    <Paper 
+                      elevation={3} 
+                      sx={{ 
+                        p: 3, 
+                        background: 'linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%)',
+                        borderLeft: '6px solid #ff9800',
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        position: 'relative',
+                        overflow: 'hidden',
+                        '&:hover': {
+                          background: 'linear-gradient(135deg, #ffe0b2 0%, #ffcc02 100%)',
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 25px rgba(255, 152, 0, 0.3)',
+                        },
+                        '&::before': {
+                          content: '""',
+                          position: 'absolute',
+                          top: 0,
+                          right: 0,
+                          width: '100px',
+                          height: '100px',
+                          background: 'radial-gradient(circle, rgba(255, 152, 0, 0.1) 0%, transparent 70%)',
+                          borderRadius: '50%',
+                          transform: 'translate(50%, -50%)'
+                        },
+                        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                      }}
+                      onClick={() => handleGroupClick('P2 Priority Items (User Stories & Bugs)', p2Metrics.items)}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, position: 'relative', zIndex: 1 }}>
+                        <Chip 
+                          label="P2" 
+                          sx={{ 
+                            backgroundColor: '#ff9800', 
+                            color: 'white', 
+                            fontWeight: 700,
+                            mr: 1,
+                            boxShadow: '0 2px 8px rgba(255, 152, 0, 0.3)'
+                          }}
+                        />
+                        <Typography variant="h6" sx={{ fontWeight: 700, color: '#ff9800' }}>
+                          High Priority
+                        </Typography>
+                      </Box>
+                      
+                      <Typography variant="h3" sx={{ mb: 2, color: '#ff9800', fontWeight: 800, position: 'relative', zIndex: 1 }}>
+                        {p2Metrics.total}
+                      </Typography>
+                      
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mb: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          ✅ Completed: {p2Metrics.completed}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔄 In Progress: {p2Metrics.inProgress}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🚫 Blocked: {p2Metrics.blocked}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔗 With PRs: {p2Metrics.withPRs}
+                        </Typography>
+                      </Box>
+
+                      {/* Work Item Type Breakdown */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', minHeight: 32 }}>
+                        {/* Hidden User Story/Bug Summary sections
+                        {p2Metrics.bugs > 0 ? (
+                          <Chip 
+                            label={`🐛 ${p2Metrics.bugs} Bug${p2Metrics.bugs > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#dc3545', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="🐛 0 Bugs"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#dc3545', 
+                              color: '#dc3545', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        {p2Metrics.userStories > 0 ? (
+                          <Chip 
+                            label={`📖 ${p2Metrics.userStories} Story${p2Metrics.userStories > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#17a2b8', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="📖 0 Stories"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#17a2b8', 
+                              color: '#17a2b8', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        */}
+                      </Box>
+
+                      {/* Hidden Child Tasks Metrics section
+                      <Box sx={{ p: 2, backgroundColor: '#ffe0b2', borderRadius: 1, mb: 2 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>
+                          📋 Child Tasks ({p2Metrics.totalTasks})
+                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            ✅ Completed: {p2Metrics.completedTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🔄 In Progress: {p2Metrics.inProgressTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            ⏳ Pending: {p2Metrics.pendingTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🚫 Blocked: {p2Metrics.blockedTasks}
+                          </Typography>
+                        </Box>
+                      </Box>
+                      */}
+
+                      {/* URLs Section */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                        {p2Metrics.adoUrls && p2Metrics.adoUrls.length > 0 ? (
+                          <Button
+                            href={p2Metrics.adoUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 1 }}
+                          >
+                            ADO ({p2Metrics.adoUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No ADO Links" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                        {p2Metrics.prUrls && p2Metrics.prUrls.length > 0 ? (
+                          <Button
+                            href={p2Metrics.prUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="contained"
+                            sx={{ 
+                              fontSize: '0.7rem', 
+                              minWidth: 'auto', 
+                              px: 1,
+                              backgroundColor: '#28a745',
+                              '&:hover': { backgroundColor: '#1e7e34' }
+                            }}
+                          >
+                            PR ({p2Metrics.prUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No PRs" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                      </Box>
+                      
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                        Click to view all P2 items
+                      </Typography>
+                    </Paper>
+                  </Grid>
+
+                  {/* P3 Priority */}
+                  <Grid item xs={12} md={3}>
+                    <Paper 
+                      elevation={3} 
+                      sx={{ 
+                        p: 3, 
+                        background: 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)',
+                        borderLeft: '6px solid #2196f3',
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        position: 'relative',
+                        overflow: 'hidden',
+                        '&:hover': {
+                          background: 'linear-gradient(135deg, #bbdefb 0%, #90caf9 100%)',
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 25px rgba(33, 150, 243, 0.3)',
+                        },
+                        '&::before': {
+                          content: '""',
+                          position: 'absolute',
+                          top: 0,
+                          right: 0,
+                          width: '100px',
+                          height: '100px',
+                          background: 'radial-gradient(circle, rgba(33, 150, 243, 0.1) 0%, transparent 70%)',
+                          borderRadius: '50%',
+                          transform: 'translate(50%, -50%)'
+                        },
+                        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                      }}
+                      onClick={() => handleGroupClick('P3 Priority Items (User Stories & Bugs)', p3Metrics.items)}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, position: 'relative', zIndex: 1 }}>
+                        <Chip 
+                          label="P3" 
+                          sx={{ 
+                            backgroundColor: '#2196f3', 
+                            color: 'white', 
+                            fontWeight: 700,
+                            mr: 1,
+                            boxShadow: '0 2px 8px rgba(33, 150, 243, 0.3)'
+                          }}
+                        />
+                        <Typography variant="h6" sx={{ fontWeight: 700, color: '#2196f3' }}>
+                          Medium Priority
+                        </Typography>
+                      </Box>
+                      
+                      <Typography variant="h3" sx={{ mb: 2, color: '#2196f3', fontWeight: 800, position: 'relative', zIndex: 1 }}>
+                        {p3Metrics.total}
+                      </Typography>
+                      
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mb: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          ✅ Completed: {p3Metrics.completed}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔄 In Progress: {p3Metrics.inProgress}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🚫 Blocked: {p3Metrics.blocked}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔗 With PRs: {p3Metrics.withPRs}
+                        </Typography>
+                      </Box>
+
+                      {/* Work Item Type Breakdown */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', minHeight: 32 }}>
+                        {/* Hidden User Story/Bug Summary sections
+                        {p3Metrics.bugs > 0 ? (
+                          <Chip 
+                            label={`🐛 ${p3Metrics.bugs} Bug${p3Metrics.bugs > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#dc3545', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="🐛 0 Bugs"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#dc3545', 
+                              color: '#dc3545', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        {p3Metrics.userStories > 0 ? (
+                          <Chip 
+                            label={`📖 ${p3Metrics.userStories} Story${p3Metrics.userStories > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#17a2b8', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="📖 0 Stories"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#17a2b8', 
+                              color: '#17a2b8', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        */}
+                      </Box>
+
+                      {/* Hidden Child Tasks Metrics section
+                      <Box sx={{ p: 2, backgroundColor: '#bbdefb', borderRadius: 1, mb: 2 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>
+                          📋 Child Tasks ({p3Metrics.totalTasks})
+                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            ✅ Completed: {p3Metrics.completedTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🔄 In Progress: {p3Metrics.inProgressTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            ⏳ Pending: {p3Metrics.pendingTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🚫 Blocked: {p3Metrics.blockedTasks}
+                          </Typography>
+                        </Box>
+                      </Box>
+                      */}
+
+                      {/* URLs Section */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                        {p3Metrics.adoUrls && p3Metrics.adoUrls.length > 0 ? (
+                          <Button
+                            href={p3Metrics.adoUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 1 }}
+                          >
+                            ADO ({p3Metrics.adoUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No ADO Links" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                        {p3Metrics.prUrls && p3Metrics.prUrls.length > 0 ? (
+                          <Button
+                            href={p3Metrics.prUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="contained"
+                            sx={{ 
+                              fontSize: '0.7rem', 
+                              minWidth: 'auto', 
+                              px: 1,
+                              backgroundColor: '#28a745',
+                              '&:hover': { backgroundColor: '#1e7e34' }
+                            }}
+                          >
+                            PR ({p3Metrics.prUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No PRs" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                      </Box>
+                      
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                        Click to view all P3 items
+                      </Typography>
+                    </Paper>
+                  </Grid>
+
+                  {/* Other/Low Priority */}
+                  <Grid item xs={12} md={3}>
+                    <Paper 
+                      elevation={3} 
+                      sx={{ 
+                        p: 3, 
+                        background: 'linear-gradient(135deg, #f5f5f5 0%, #eeeeee 100%)',
+                        borderLeft: '6px solid #757575',
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        position: 'relative',
+                        overflow: 'hidden',
+                        '&:hover': {
+                          background: 'linear-gradient(135deg, #eeeeee 0%, #e0e0e0 100%)',
+                          transform: 'translateY(-2px)',
+                          boxShadow: '0 8px 25px rgba(117, 117, 117, 0.3)',
+                        },
+                        '&::before': {
+                          content: '""',
+                          position: 'absolute',
+                          top: 0,
+                          right: 0,
+                          width: '100px',
+                          height: '100px',
+                          background: 'radial-gradient(circle, rgba(117, 117, 117, 0.1) 0%, transparent 70%)',
+                          borderRadius: '50%',
+                          transform: 'translate(50%, -50%)'
+                        },
+                        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                      }}
+                      onClick={() => handleGroupClick('Low/No Priority Items (User Stories & Bugs)', otherMetrics.items)}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, position: 'relative', zIndex: 1 }}>
+                        <Chip 
+                          label="Low" 
+                          sx={{ 
+                            backgroundColor: '#757575', 
+                            color: 'white', 
+                            fontWeight: 700,
+                            mr: 1,
+                            boxShadow: '0 2px 8px rgba(117, 117, 117, 0.3)'
+                          }}
+                        />
+                        <Typography variant="h6" sx={{ fontWeight: 700, color: '#757575' }}>
+                          Low/No Priority
+                        </Typography>
+                      </Box>
+                      
+                      <Typography variant="h3" sx={{ mb: 2, color: '#757575', fontWeight: 800, position: 'relative', zIndex: 1 }}>
+                        {otherMetrics.total}
+                      </Typography>
+                      
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mb: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          ✅ Completed: {otherMetrics.completed}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔄 In Progress: {otherMetrics.inProgress}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🚫 Blocked: {otherMetrics.blocked}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          🔗 With PRs: {otherMetrics.withPRs}
+                        </Typography>
+                      </Box>
+
+                      {/* Work Item Type Breakdown */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap', minHeight: 32 }}>
+                        {/* Hidden User Story/Bug Summary sections
+                        {otherMetrics.bugs > 0 ? (
+                          <Chip 
+                            label={`🐛 ${otherMetrics.bugs} Bug${otherMetrics.bugs > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#dc3545', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="🐛 0 Bugs"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#dc3545', 
+                              color: '#dc3545', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        {otherMetrics.userStories > 0 ? (
+                          <Chip 
+                            label={`📖 ${otherMetrics.userStories} Story${otherMetrics.userStories > 1 ? 's' : ''}`}
+                            size="small"
+                            sx={{ 
+                              backgroundColor: '#17a2b8', 
+                              color: 'white', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem'
+                            }}
+                          />
+                        ) : (
+                          <Chip 
+                            label="📖 0 Stories"
+                            size="small"
+                            variant="outlined"
+                            sx={{ 
+                              borderColor: '#17a2b8', 
+                              color: '#17a2b8', 
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              opacity: 0.6
+                            }}
+                          />
+                        )}
+                        */}
+                      </Box>
+
+                      {/* Hidden Child Tasks Metrics section
+                      <Box sx={{ p: 2, backgroundColor: '#eeeeee', borderRadius: 1, mb: 2 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', mb: 1 }}>
+                          📋 Child Tasks ({otherMetrics.totalTasks})
+                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            ✅ Completed: {otherMetrics.completedTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🔄 In Progress: {otherMetrics.inProgressTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            ⏳ Pending: {otherMetrics.pendingTasks}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            🚫 Blocked: {otherMetrics.blockedTasks}
+                          </Typography>
+                        </Box>
+                      </Box>
+                      */}
+
+                      {/* URLs Section */}
+                      <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                        {otherMetrics.adoUrls && otherMetrics.adoUrls.length > 0 ? (
+                          <Button
+                            href={otherMetrics.adoUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', minWidth: 'auto', px: 1 }}
+                          >
+                            ADO ({otherMetrics.adoUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No ADO Links" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                        {otherMetrics.prUrls && otherMetrics.prUrls.length > 0 ? (
+                          <Button
+                            href={otherMetrics.prUrls[0]}
+                            target="_blank"
+                            size="small"
+                            variant="contained"
+                            sx={{ 
+                              fontSize: '0.7rem', 
+                              minWidth: 'auto', 
+                              px: 1,
+                              backgroundColor: '#28a745',
+                              '&:hover': { backgroundColor: '#1e7e34' }
+                            }}
+                          >
+                            PR ({otherMetrics.prUrls.length})
+                          </Button>
+                        ) : (
+                          <Chip 
+                            label="No PRs" 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontSize: '0.7rem', height: 24, color: 'text.secondary' }}
+                          />
+                        )}
+                      </Box>
+                      
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                        Click to view all low priority items
+                      </Typography>
+                    </Paper>
+                  </Grid>
+        </Grid>
+
+        {/* Comment out all the old sections since we have the new integrated component
+        {/* Hidden User Stories Summary */}
+        <Grid item xs={12} md={6}>
+          <Item>
+            <Typography variant="h5" component="h2" gutterBottom>
+              User Stories Summary
+            </Typography>
+            <Box sx={{ height: 400, overflow: 'auto' }}>
+              {workItems
+                .filter(item => item.type === 'User Story')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .map((item) => (
+                <Paper 
+                  key={item.id} 
+                  elevation={0} 
+                  sx={{ 
+                    p: 2, 
+                    mb: 2, 
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #dee2e6',
+                    borderLeft: `4px solid ${getPriorityColor(item.priority)}`,
+                    cursor: 'pointer',
+                    '&:hover': {
+                      backgroundColor: '#f8f9fa',
+                      transform: 'translateY(-1px)',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                    },
+                    transition: 'all 0.2s ease-in-out'
+                  }}
+                  onClick={() => handleWorkItemClick(item)}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                    {item.type}: {item.title}
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      ID: {item.id} | State: {item.state}
+                    </Typography>
+                    <Chip 
+                      label={`P${item.priority || '?'}`} 
+                      size="small"
+                      sx={{
+                        backgroundColor: item.priority === 1 ? '#f44336' : 
+                                       item.priority === 2 ? '#ff9800' : 
+                                       item.priority === 3 ? '#2196f3' : '#9e9e9e',
+                        color: 'white',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        height: 20
+                      }}
+                    />
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    Assigned to: {item.assignedTo || 'Unassigned'}
+                  </Typography>
+                  <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        Click for details
+                      </Typography>
+                      {getPRLinks(item).length > 0 && (
+                        <Chip 
+                          icon={<GitHubIcon sx={{ fontSize: 12 }} />}
+                          label={`${getPRLinks(item).length} PR${getPRLinks(item).length > 1 ? 's' : ''}`}
+                          size="small"
+                          sx={{
+                            backgroundColor: '#28a745',
+                            color: 'white',
+                            fontSize: '0.7rem',
+                            height: 18,
+                            '& .MuiChip-icon': {
+                              color: 'white'
+                            }
+                          }}
+                        />
+                      )}
+                      {(item.state === 'Blocked' || isWorkItemBlocked(item)) && (
+                        <Chip 
+                          label="🚫 BLOCKED"
+                          size="small"
+                          sx={{
+                            backgroundColor: '#dc3545',
+                            color: 'white',
+                            fontSize: '0.7rem',
+                            height: 18,
+                            fontWeight: 600,
+                            animation: 'pulse 2s infinite'
+                          }}
+                        />
+                      )}
+                    </Box>
+                    <OpenInNewIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                  </Box>
+                </Paper>
+              ))}
+              {workItems
+                .filter(item => item.type === 'User Story')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .length === 0 && (
+                <Alert severity="info">
+                  No User Stories found in the current sprint.
+                </Alert>
+              )}
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden Bugs Summary
+        <Grid item xs={12} md={6}>
+          <Item>
+            <Typography variant="h5" component="h2" gutterBottom>
+              Bugs Summary
+            </Typography>
+            <Box sx={{ height: 400, overflow: 'auto' }}>
+              {workItems
+                .filter(item => item.type === 'Bug')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .map((item) => (
+                <Paper 
+                  key={item.id} 
+                  elevation={0} 
+                  sx={{ 
+                    p: 2, 
+                    mb: 2, 
+                    backgroundColor: '#ffebee',
+                    borderLeft: `4px solid ${item.priority === 1 ? '#f44336' : item.priority === 2 ? '#ff9800' : '#4caf50'}`,
+                    cursor: 'pointer',
+                    '&:hover': {
+                      backgroundColor: '#ffcdd2',
+                      transform: 'translateY(-1px)',
+                      boxShadow: 1,
+                    },
+                    transition: 'all 0.2s ease-in-out'
+                  }}
+                  onClick={() => handleWorkItemClick(item)}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                    {item.type}: {item.title}
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      ID: {item.id} | State: {item.state}
+                    </Typography>
+                    <Chip 
+                      label={`P${item.priority || '?'}`} 
+                      size="small"
+                      sx={{
+                        backgroundColor: item.priority === 1 ? '#f44336' : 
+                                       item.priority === 2 ? '#ff9800' : 
+                                       item.priority === 3 ? '#2196f3' : '#9e9e9e',
+                        color: 'white',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        height: 20
+                      }}
+                    />
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    Assigned to: {item.assignedTo || 'Unassigned'}
+                  </Typography>
+                  <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        Click for details
+                      </Typography>
+                      {getPRLinks(item).length > 0 && (
+                        <Chip 
+                          icon={<GitHubIcon sx={{ fontSize: 12 }} />}
+                          label={`${getPRLinks(item).length} PR${getPRLinks(item).length > 1 ? 's' : ''}`}
+                          size="small"
+                          sx={{
+                            backgroundColor: '#28a745',
+                            color: 'white',
+                            fontSize: '0.7rem',
+                            height: 18,
+                            '& .MuiChip-icon': {
+                              color: 'white'
+                            }
+                          }}
+                        />
+                      )}
+                      {(item.state === 'Blocked' || isWorkItemBlocked(item)) && (
+                        <Chip 
+                          label="🚫 BLOCKED"
+                          size="small"
+                          sx={{
+                            backgroundColor: '#dc3545',
+                            color: 'white',
+                            fontSize: '0.7rem',
+                            height: 18,
+                            fontWeight: 600,
+                            animation: 'pulse 2s infinite'
+                          }}
+                        />
+                      )}
+                    </Box>
+                    <OpenInNewIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                  </Box>
+                </Paper>
+              ))}
+              {workItems
+                .filter(item => item.type === 'Bug')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .length === 0 && (
+                <Alert severity="info">
+                  No Bugs found in the current sprint.
+                </Alert>
+              )}
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden Tasks Summary
+        <Grid item xs={12} md={8}>
+          <Item>
+            <Typography variant="h5" component="h2" gutterBottom>
+              Tasks Summary
+            </Typography>
+            <Box sx={{ height: 400, overflow: 'auto' }}>
+              {workItems
+                .filter(item => item.type === 'Task')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .map((item) => (
+                <Paper 
+                  key={item.id} 
+                  elevation={0} 
+                  sx={{ 
+                    p: 2, 
+                    mb: 2, 
+                    backgroundColor: '#fff3e0',
+                    borderLeft: `4px solid ${item.priority === 1 ? '#f44336' : item.priority === 2 ? '#ff9800' : '#2196f3'}`,
+                    cursor: 'pointer',
+                    '&:hover': {
+                      backgroundColor: '#ffe0b2',
+                      transform: 'translateY(-1px)',
+                      boxShadow: 1,
+                    },
+                    transition: 'all 0.2s ease-in-out'
+                  }}
+                  onClick={() => handleWorkItemClick(item)}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                    {item.type}: {item.title}
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      ID: {item.id} | State: {item.state}
+                    </Typography>
+                    <Chip 
+                      label={`P${item.priority || '?'}`} 
+                      size="small"
+                      sx={{
+                        backgroundColor: item.priority === 1 ? '#f44336' : 
+                                       item.priority === 2 ? '#ff9800' : 
+                                       item.priority === 3 ? '#2196f3' : '#9e9e9e',
+                        color: 'white',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        height: 20
+                      }}
+                    />
+                    {isWorkItemBlocked(item) && (
+                      <Chip
+                        label="🚫 BLOCKED"
+                        size="small"
+                        sx={{
+                          backgroundColor: '#f44336',
+                          color: 'white',
+                          fontWeight: 'bold',
+                          fontSize: '0.7rem',
+                          height: 20,
+                          animation: 'pulse 2s infinite',
+                          '@keyframes pulse': {
+                            '0%': { opacity: 1 },
+                            '50%': { opacity: 0.7 },
+                            '100%': { opacity: 1 }
+                          }
+                        }}
+                      />
+                    )}
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    Assigned to: {item.assignedTo || 'Unassigned'}
+                  </Typography>
+                  <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        Click for details
+                      </Typography>
+                      {getPRLinks(item).length > 0 && (
+                        <Chip 
+                          icon={<GitHubIcon sx={{ fontSize: 12 }} />}
+                          label={`${getPRLinks(item).length} PR${getPRLinks(item).length > 1 ? 's' : ''}`}
+                          size="small"
+                          sx={{
+                            backgroundColor: '#28a745',
+                            color: 'white',
+                            fontSize: '0.7rem',
+                            height: 18,
+                            '& .MuiChip-icon': {
+                              color: 'white'
+                            }
+                          }}
+                        />
+                      )}
+                    </Box>
+                    <OpenInNewIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+                  </Box>
+                </Paper>
+              ))}
+              {workItems
+                .filter(item => item.type === 'Task')
+                .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // Sort by priority: P1, P2, P3, etc.
+                .length === 0 && (
+                <Alert severity="info">
+                  No Tasks found in the current sprint.
+                </Alert>
+              )}
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden Sprint Capacity Utilization
+        <Grid item xs={12} md={4}>
+          <Item>
+            <Typography variant="h5" component="h2" gutterBottom>
+              Sprint Capacity Utilization
+            </Typography>
+            <Box sx={{ height: 400, overflow: 'auto' }}>
+              {(() => {
+                const userCapacity = workItems.reduce((acc, item) => {
+                  if (item.assignedTo) {
+                    const user = item.assignedTo;
+                    if (!acc[user]) {
+                      acc[user] = { assignedHours: 0, completedHours: 0 };
+                    }
+                    const hours = item.effort || 4;
+                    acc[user].assignedHours += hours;
+                    if (item.state === 'Done' || item.state === 'Closed') {
+                      acc[user].completedHours += hours;
+                    }
+                  }
+                  return acc;
+                }, {} as Record<string, { assignedHours: number; completedHours: number }>);
+
+                const users = Object.keys(userCapacity);
+                const totalCapacity = 40; // 40 hours per sprint per user (8 hours/day * 5 days)
+
+                return users.length > 0 ? users.map((user) => {
+                  const capacity = userCapacity[user];
+                  const utilizationPercent = Math.min((capacity.assignedHours / totalCapacity) * 100, 100);
+                  const completionPercent = capacity.assignedHours > 0 ? (capacity.completedHours / capacity.assignedHours) * 100 : 0;
+
+                  return (
+                    <Paper
+                      key={user}
+                      elevation={0}
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        backgroundColor: '#f5f5f5',
+                        borderLeft: `4px solid ${utilizationPercent > 100 ? '#f44336' : utilizationPercent > 80 ? '#ff9800' : '#4caf50'}`
+                      }}
+                    >
+                      <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                        {user}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Assigned: {capacity.assignedHours}h / {totalCapacity}h ({utilizationPercent.toFixed(1)}%)
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Completed: {completionPercent.toFixed(1)}%
+                      </Typography>
+                      <LinearProgress
+                        variant="determinate"
+                        value={Math.min(utilizationPercent, 100)}
+                        sx={{ mt: 1, height: 6, borderRadius: 1 }}
+                        color={utilizationPercent > 100 ? 'error' : utilizationPercent > 80 ? 'warning' : 'success'}
+                      />
+                    </Paper>
+                  );
+                }) : (
+                  <Alert severity="info">
+                    No capacity data available for the current sprint.
+                  </Alert>
+                );
+              })()}
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden Developer Engagement Panel
+        <Grid item xs={12} md={6}>
+          <Item>
+            <Box sx={{ height: 'auto', minHeight: 600 }}>
+              <DeveloperEngagementPanel />
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden AI Scrum Assistant
+        <Grid item xs={12} md={6}>
+          <Item>
+            <Box sx={{ height: 'auto', minHeight: 600 }}>
+              <AiScrumAssistant />
+            </Box>
+          </Item>
+        </Grid>
+        */}
+
+        {/* Hidden Git PR Monitoring Panel (Work Items with Pull Requests)
+        <Grid item xs={12}>
+          <Item>
+            <Box sx={{ height: 'auto', minHeight: 600 }}>
+              <GitPRMonitoringPanel />
+            </Box>
+          </Item>
+        </Grid>
+        */}
+      </Grid>
+
+      </Box> {/* Close Main Content Box */}
+
+      {/* Work Item Details Dialog */}
+      <Dialog
+        open={isDialogOpen}
+        onClose={handleDialogClose}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            maxHeight: '90vh',
+            border: '1px solid #e0e0e0',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.12)'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          pb: 2, 
+          pt: 3, 
+          px: 3,
+          background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+          borderBottom: '1px solid #e0e0e0'
+        }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <Box sx={{ flex: 1, pr: 2 }}>
+              <Typography variant="h5" component="h2" sx={{ 
+                fontWeight: 700, 
+                mb: 2,
+                color: '#1a1a1a',
+                lineHeight: 1.3
+              }}>
+                {selectedWorkItem?.title || 'Work Item Details'}
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={selectedWorkItem?.type || 'Unknown'} 
+                  sx={{ 
+                    backgroundColor: '#1976d2',
+                    color: 'white',
+                    fontWeight: 600,
+                    fontSize: '0.875rem'
+                  }}
+                />
+                <Chip 
+                  label={`ID: ${selectedWorkItem?.id}`} 
+                  variant="outlined" 
+                  sx={{ 
+                    borderColor: '#1976d2',
+                    color: '#1976d2',
+                    fontWeight: 600
+                  }}
+                />
+                <Chip 
+                  label={selectedWorkItem?.state || 'Unknown'} 
+                  sx={{
+                    backgroundColor: selectedWorkItem?.state === 'Done' ? '#4caf50' : 
+                                   selectedWorkItem?.state === 'Active' ? '#ff9800' : '#9e9e9e',
+                    color: 'white',
+                    fontWeight: 600
+                  }}
+                />
+                {selectedWorkItem?.priority && (
+                  <Chip 
+                    label={`Priority ${selectedWorkItem.priority}`} 
+                    sx={{
+                      backgroundColor: selectedWorkItem.priority === 1 ? '#f44336' : 
+                                     selectedWorkItem.priority === 2 ? '#ff9800' : '#2196f3',
+                      color: 'white',
+                      fontWeight: 600
+                    }}
+                  />
+                )}
+              </Box>
+            </Box>
+            <IconButton 
+              onClick={handleDialogClose} 
+              sx={{ 
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                '&:hover': { backgroundColor: 'rgba(255,255,255,1)' },
+                boxShadow: 1
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        
+        <DialogContent sx={{ p: 0, backgroundColor: '#fafafa' }}>
+          {selectedWorkItem && (
+            <Box sx={{ p: 3 }}>
+              <Grid container spacing={3}>
+                {/* Left Column - Main Content */}
+                <Grid item xs={12} md={8}>
+                  {/* Description Card */}
+                  <Paper 
+                    elevation={0} 
+                    sx={{ 
+                      p: 3, 
+                      mb: 3, 
+                      borderRadius: 3,
+                      border: '1px solid #e3f2fd',
+                      backgroundColor: 'white',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                      <Box sx={{ 
+                        width: 32, 
+                        height: 32, 
+                        borderRadius: '50%', 
+                        backgroundColor: '#e3f2fd',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mr: 2
+                      }}>
+                        📋
+                      </Box>
+                      <Typography variant="h6" sx={{ fontWeight: 700, color: '#1565c0' }}>
+                        Description
+                      </Typography>
+                    </Box>
+                    <Box sx={{ 
+                      p: 2.5, 
+                      backgroundColor: '#f8f9fa', 
+                      borderRadius: 2,
+                      border: '1px solid #e9ecef'
+                    }}>
+                      <Typography variant="body1" sx={{ 
+                        whiteSpace: 'pre-wrap', 
+                        lineHeight: 1.7,
+                        color: '#2c2c2c',
+                        fontSize: '0.95rem'
+                      }}>
+                        {formatDescription(selectedWorkItem.description)}
+                      </Typography>
+                    </Box>
+                  </Paper>
+
+                  {/* Git PR Links Card */}
+                  {(() => {
+                    const prLinks = getPRLinks(selectedWorkItem);
+                    return prLinks.length > 0 && (
+                      <Paper 
+                        elevation={0} 
+                        sx={{ 
+                          p: 3, 
+                          mb: 3, 
+                          borderRadius: 3,
+                          border: '1px solid #e8f5e9',
+                          backgroundColor: 'white',
+                          boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                          <Box sx={{ 
+                            width: 32, 
+                            height: 32, 
+                            borderRadius: '50%', 
+                            backgroundColor: '#e8f5e9',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            mr: 2
+                          }}>
+                            🔗
+                          </Box>
+                          <Typography variant="h6" sx={{ fontWeight: 700, color: '#2e7d32' }}>
+                            Related Pull Requests
+                          </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                          {prLinks.map((prLink, index) => (
+                            <Button
+                              key={index}
+                              href={prLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              variant="outlined"
+                              startIcon={<GitHubIcon />}
+                              sx={{ 
+                                justifyContent: 'flex-start',
+                                borderRadius: 2,
+                                borderColor: '#e0e0e0',
+                                color: '#1976d2',
+                                '&:hover': {
+                                  borderColor: '#1976d2',
+                                  backgroundColor: '#f5f5f5'
+                                }
+                              }}
+                            >
+                              Pull Request #{index + 1}
+                            </Button>
+                          ))}
+                        </Box>
+                      </Paper>
+                    );
+                  })()}
+
+                  {/* Tags Card */}
+                  {selectedWorkItem.tags && selectedWorkItem.tags.length > 0 && (
+                    <Paper 
+                      elevation={0} 
+                      sx={{ 
+                        p: 3, 
+                        borderRadius: 3,
+                        border: '1px solid #fff3e0',
+                        backgroundColor: 'white',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                        <Box sx={{ 
+                          width: 32, 
+                          height: 32, 
+                          borderRadius: '50%', 
+                          backgroundColor: '#fff3e0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          mr: 2
+                        }}>
+                          🏷️
+                        </Box>
+                        <Typography variant="h6" sx={{ fontWeight: 700, color: '#f57c00' }}>
+                          Tags
+                        </Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                        {selectedWorkItem.tags.map((tag, index) => (
+                          <Chip
+                            key={index}
+                            label={tag}
+                            variant="outlined"
+                            sx={{
+                              borderColor: '#ff9800',
+                              color: '#f57c00',
+                              backgroundColor: '#fff8e1',
+                              fontWeight: 500,
+                              '&:hover': {
+                                backgroundColor: '#ffecb3'
+                              }
+                            }}
+                          />
+                        ))}
+                      </Box>
+                    </Paper>
+                  )}
+                </Grid>
+
+                {/* Right Column - Metadata & Actions */}
+                <Grid item xs={12} md={4}>
+                  {/* Work Item Details Card */}
+                  <Paper 
+                    elevation={0} 
+                    sx={{ 
+                      p: 3, 
+                      mb: 3, 
+                      borderRadius: 3,
+                      border: '1px solid #e3f2fd',
+                      backgroundColor: 'white',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                      <Box sx={{ 
+                        width: 32, 
+                        height: 32, 
+                        borderRadius: '50%', 
+                        backgroundColor: '#e3f2fd',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mr: 2
+                      }}>
+                        ℹ️
+                      </Box>
+                      <Typography variant="h6" sx={{ fontWeight: 700, color: '#1565c0' }}>
+                        Details
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <Box sx={{ 
+                        p: 2, 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: 2,
+                        border: '1px solid #e9ecef'
+                      }}>
+                        <Typography variant="caption" sx={{ 
+                          fontWeight: 700, 
+                          color: '#6c757d',
+                          letterSpacing: 0.5,
+                          textTransform: 'uppercase'
+                        }}>
+                          Assigned to
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 500 }}>
+                          {selectedWorkItem.assignedTo || 'Unassigned'}
+                        </Typography>
+                      </Box>
+                      
+                      <Box sx={{ 
+                        p: 2, 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: 2,
+                        border: '1px solid #e9ecef'
+                      }}>
+                        <Typography variant="caption" sx={{ 
+                          fontWeight: 700, 
+                          color: '#6c757d',
+                          letterSpacing: 0.5,
+                          textTransform: 'uppercase'
+                        }}>
+                          Effort Points
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 500 }}>
+                          {selectedWorkItem.effort || 'Not estimated'} points
+                        </Typography>
+                      </Box>
+
+                      <Box sx={{ 
+                        p: 2, 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: 2,
+                        border: '1px solid #e9ecef'
+                      }}>
+                        <Typography variant="caption" sx={{ 
+                          fontWeight: 700, 
+                          color: '#6c757d',
+                          letterSpacing: 0.5,
+                          textTransform: 'uppercase'
+                        }}>
+                          Created
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 500 }}>
+                          {new Date(selectedWorkItem.createdDate).toLocaleDateString()}
+                        </Typography>
+                      </Box>
+
+                      <Box sx={{ 
+                        p: 2, 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: 2,
+                        border: '1px solid #e9ecef'
+                      }}>
+                        <Typography variant="caption" sx={{ 
+                          fontWeight: 700, 
+                          color: '#6c757d',
+                          letterSpacing: 0.5,
+                          textTransform: 'uppercase'
+                        }}>
+                          Last Updated
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 500 }}>
+                          {new Date(selectedWorkItem.updatedDate).toLocaleDateString()}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Paper>
+
+                  {/* ADO Link Card */}
+                  <Paper 
+                    elevation={0} 
+                    sx={{ 
+                      p: 3, 
+                      borderRadius: 3,
+                      border: '1px solid #e8f5e9',
+                      backgroundColor: 'white',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                      <Box sx={{ 
+                        width: 32, 
+                        height: 32, 
+                        borderRadius: '50%', 
+                        backgroundColor: '#e8f5e9',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mr: 2
+                      }}>
+                        🔗
+                      </Box>
+                      <Typography variant="h6" sx={{ fontWeight: 700, color: '#2e7d32' }}>
+                        Azure DevOps
+                      </Typography>
+                    </Box>
+                    <Button
+                      href={getAdoWorkItemUrl(selectedWorkItem)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      variant="contained"
+                      fullWidth
+                      startIcon={<OpenInNewIcon />}
+                      sx={{ 
+                        mb: 1.5,
+                        borderRadius: 2,
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+                        '&:hover': {
+                          boxShadow: '0 6px 16px rgba(25, 118, 210, 0.4)'
+                        }
+                      }}
+                    >
+                      Open in ADO Board
+                    </Button>
+                    <Typography variant="caption" sx={{ 
+                      display: 'block', 
+                      textAlign: 'center',
+                      color: '#6c757d',
+                      fontWeight: 500
+                    }}>
+                      Work Item ID: {selectedWorkItem.id}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+            </Box>
+          )}
+        </DialogContent>
+        
+        <DialogActions sx={{ 
+          p: 3, 
+          gap: 1.5,
+          backgroundColor: 'white',
+          borderTop: '1px solid #e0e0e0'
+        }}>
+          <Button 
+            onClick={handleDialogClose} 
+            variant="outlined" 
+            sx={{ 
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              minWidth: 100
+            }}
+          >
+            Close
+          </Button>
+          {selectedWorkItem && (
+            <Button
+              onClick={() => window.open(getAdoWorkItemUrl(selectedWorkItem), '_blank')}
+              variant="contained"
+              startIcon={<OpenInNewIcon />}
+              sx={{ 
+                borderRadius: 2,
+                textTransform: 'none',
+                fontWeight: 600,
+                boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+                '&:hover': {
+                  boxShadow: '0 6px 16px rgba(25, 118, 210, 0.4)'
+                }
+              }}
+            >
+              Open in Azure DevOps
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Group Items Dialog */}
+      <Dialog
+        open={isGroupDialogOpen}
+        onClose={handleGroupDialogClose}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            maxHeight: '90vh',
+            border: '1px solid #e0e0e0',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.12)'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          pb: 2, 
+          pt: 3, 
+          px: 3,
+          background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+          borderBottom: '1px solid #e0e0e0'
+        }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h5" component="h2" sx={{ 
+              fontWeight: 700, 
+              color: '#1a1a1a',
+              lineHeight: 1.3
+            }}>
+              {groupDialogTitle} ({groupDialogItems.length} items)
+            </Typography>
+            <IconButton 
+              onClick={handleGroupDialogClose} 
+              sx={{ 
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                '&:hover': { backgroundColor: 'rgba(255,255,255,1)' },
+                boxShadow: 1
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        
+        <DialogContent sx={{ p: 0, backgroundColor: '#fafafa' }}>
+          <Box sx={{ p: 3 }}>
+            {groupDialogItems.length > 0 ? (
+              <Grid container spacing={2}>
+                {groupDialogItems
+                  .sort((a, b) => (a.priority || 999) - (b.priority || 999))
+                  .map((item) => (
+                  <Grid item xs={12} md={6} key={item.id}>
+                    <Paper 
+                      elevation={0} 
+                      sx={{ 
+                        p: 3, 
+                        backgroundColor: 'white',
+                        borderRadius: 2,
+                        border: '1px solid #e0e0e0',
+                        borderLeft: `4px solid ${item.priority === 1 ? '#f44336' : item.priority === 2 ? '#ff9800' : '#4caf50'}`,
+                        cursor: 'pointer',
+                        '&:hover': {
+                          backgroundColor: '#f8f9fa',
+                          transform: 'translateY(-1px)',
+                          boxShadow: 2,
+                        },
+                        transition: 'all 0.2s ease-in-out'
+                      }}
+                      onClick={() => {
+                        setSelectedWorkItem(item);
+                        setIsDialogOpen(true);
+                        setIsGroupDialogOpen(false);
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 'bold', flex: 1, pr: 2 }}>
+                          {item.title}
+                        </Typography>
+                        <Chip 
+                          label={`P${item.priority || '?'}`} 
+                          size="small"
+                          sx={{
+                            backgroundColor: item.priority === 1 ? '#f44336' : 
+                                           item.priority === 2 ? '#ff9800' : 
+                                           item.priority === 3 ? '#2196f3' : '#9e9e9e',
+                            color: 'white',
+                            fontWeight: 600,
+                            fontSize: '0.75rem',
+                            height: 20
+                          }}
+                        />
+                      </Box>
+                      
+                      <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
+                        <Chip 
+                          label={item.type} 
+                          size="small"
+                          sx={{ 
+                            backgroundColor: item.type === 'Bug' ? '#dc3545' : 
+                                           item.type === 'User Story' ? '#17a2b8' : '#1976d2',
+                            color: 'white',
+                            fontWeight: 600
+                          }}
+                        />
+                        <Chip 
+                          label={`ID: ${item.id}`} 
+                          size="small"
+                          variant="outlined" 
+                          sx={{ 
+                            borderColor: '#1976d2',
+                            color: '#1976d2',
+                            fontWeight: 600
+                          }}
+                        />
+                        <Chip 
+                          label={item.state} 
+                          size="small"
+                          sx={{
+                            backgroundColor: item.state === 'Done' ? '#4caf50' : 
+                                           item.state === 'Active' ? '#ff9800' : 
+                                           item.state === 'Blocked' ? '#f44336' : '#9e9e9e',
+                            color: 'white',
+                            fontWeight: 600
+                          }}
+                        />
+                      </Box>
+
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        Assigned to: {item.assignedTo || 'Unassigned'}
+                      </Typography>
+
+                      <Box sx={{ 
+                        p: 2, 
+                        backgroundColor: '#f8f9fa', 
+                        borderRadius: 1,
+                        border: '1px solid #e9ecef',
+                        mb: 2
+                      }}>
+                        <Typography variant="body2" sx={{ 
+                          display: '-webkit-box',
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          lineHeight: 1.5
+                        }}>
+                          {formatDescription(item.description)}
+                        </Typography>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Button
+                            href={getAdoWorkItemUrl(item)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            variant="outlined"
+                            size="small"
+                            startIcon={<OpenInNewIcon />}
+                            sx={{ 
+                              textTransform: 'none',
+                              fontWeight: 600,
+                              borderRadius: 1
+                            }}
+                          >
+                            ADO
+                          </Button>
+                          {getPRLinks(item).length > 0 && (
+                            <Button
+                              href={getPRLinks(item)[0]}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              variant="contained"
+                              size="small"
+                              startIcon={<GitHubIcon />}
+                              sx={{ 
+                                textTransform: 'none',
+                                fontWeight: 600,
+                                borderRadius: 1,
+                                backgroundColor: '#28a745',
+                                '&:hover': {
+                                  backgroundColor: '#1e7e34'
+                                }
+                              }}
+                            >
+                              PR ({getPRLinks(item).length})
+                            </Button>
+                          )}
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Click card for full details
+                        </Typography>
+                      </Box>
+                    </Paper>
+                  </Grid>
+                ))}
+              </Grid>
+            ) : (
+              <Alert severity="info" sx={{ mt: 2 }}>
+                No work items found in this category.
+              </Alert>
+            )}
+          </Box>
+        </DialogContent>
+        
+        <DialogActions sx={{ 
+          p: 3, 
+          backgroundColor: 'white',
+          borderTop: '1px solid #e0e0e0'
+        }}>
+          <Button 
+            onClick={handleGroupDialogClose} 
+            variant="outlined" 
+            sx={{ 
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600
+            }}
+          >
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+    </Box>
+  );
+};
+
+export default Dashboard;
