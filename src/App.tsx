@@ -17,6 +17,7 @@ import GitPRPage from './pages/GitPR';
 import SentimentAnalysisPage from './pages/SentimentAnalysis';
 import SentimentAnalysisDemoPage from './pages/SentimentAnalysisDemo';
 import CommentDebugPanel from './components/debug/CommentDebugPanel';
+import automationOrchestrator from './services/automationOrchestrator';
 
 // Create a theme instance
 const theme = createTheme({
@@ -95,20 +96,13 @@ function App() {
     
     // Mark effect as having run
     effectRan.current = true;
-    
-    // Initialize background services - DISABLED to prevent page refreshing
-    console.log('Background services initialization DISABLED to prevent page refreshing');
-    
-    /* Original background services initialization commented out:
-    console.log('Initializing background services...');
-    sentimentAnalysisBackgroundService.startBackgroundUpdates();
-    
-    // Initialize automation services
-    console.log('Starting automation services...');
-    rulesEngine.start();
-    dailySummaryScheduler.start();
-    notificationAlertingSystem.start();
-    */
+
+    // Central automation platform:
+    // - single staggered scheduler (no refresh storms)
+    // - dry-run by default until enabled in Settings → Automation
+    // - pauses when the tab is hidden
+    console.log('Initializing Automation Orchestrator...');
+    automationOrchestrator.start();
     
     // Listen for storage events to update the setupCompleted state
     const handleStorageChange = () => {
@@ -128,6 +122,7 @@ function App() {
     return () => {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('setup-completed', handleSetupComplete);
+      automationOrchestrator.stop();
     };
   }, []);
 

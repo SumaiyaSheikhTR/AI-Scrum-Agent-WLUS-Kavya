@@ -42,8 +42,8 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ticketManagementService, { 
   TicketManagementConfig, 
-  StatusUpdateRule, 
-  CommentRule 
+  DeclarativeStatusUpdateRule as StatusUpdateRule, 
+  DeclarativeCommentRule as CommentRule 
 } from '../../services/ticketManagementService';
 
 interface TicketManagementConfigFormProps {
@@ -173,16 +173,17 @@ const TicketManagementConfigForm: React.FC<TicketManagementConfigFormProps> = ({
         statusUpdateRules: updatedRules,
       });
     } else {
-      // Add new rule (with a dummy condition for UI purposes)
-      const dummyCondition = (workItem: any) => false;
-      
+      // Declarative default condition (serializable) — match tagged PR-merged in-progress items
       const newRule: StatusUpdateRule = {
         id: `custom_${Date.now()}`,
         name: newStatusRule.name || 'New Rule',
         description: newStatusRule.description || '',
         targetState: newStatusRule.targetState || 'Ready for QA',
         enabled: newStatusRule.enabled !== undefined ? newStatusRule.enabled : true,
-        condition: dummyCondition,
+        conditions: [
+          { field: 'state', operator: 'equals', value: 'In Progress' },
+          { field: 'tags', operator: 'contains', value: 'pr-merged', logicalOperator: 'AND' },
+        ],
       };
       
       setConfig({
@@ -252,9 +253,7 @@ const TicketManagementConfigForm: React.FC<TicketManagementConfigFormProps> = ({
         commentRules: updatedRules,
       });
     } else {
-      // Add new rule (with a dummy condition for UI purposes)
-      const dummyCondition = (workItem: any) => false;
-      
+      // Declarative default condition (serializable)
       const newRule: CommentRule = {
         id: `custom_${Date.now()}`,
         name: newCommentRule.name || 'New Rule',
@@ -262,7 +261,10 @@ const TicketManagementConfigForm: React.FC<TicketManagementConfigFormProps> = ({
         commentTemplate: newCommentRule.commentTemplate || 'Please update this work item.',
         cooldownDays: newCommentRule.cooldownDays || 3,
         enabled: newCommentRule.enabled !== undefined ? newCommentRule.enabled : true,
-        condition: dummyCondition,
+        conditions: [
+          { field: 'state', operator: 'in', value: ['Active', 'In Progress'] },
+          { field: 'updatedDate', operator: 'days_since', value: 3, logicalOperator: 'AND' },
+        ],
       };
       
       setConfig({

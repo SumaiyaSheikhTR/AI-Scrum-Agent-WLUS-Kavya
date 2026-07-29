@@ -217,26 +217,34 @@ class DeveloperEngagementService {
     }
   }
 
+  private orchestratedMode = false;
+
+  public setOrchestratedMode(enabled: boolean): void {
+    this.orchestratedMode = enabled;
+    if (enabled) {
+      this.stopUpdateTimer();
+    }
+  }
+
   /**
-   * Start the timer for automatic updates
+   * Start the timer for automatic updates (standalone mode only)
    */
   private startUpdateTimer(): void {
+    if (this.orchestratedMode) return;
+
     if (this.updateTimer) {
       clearInterval(this.updateTimer);
     }
 
-    const intervalMs = this.config.updateInterval * 60 * 1000; // Convert minutes to milliseconds
-    
-    // Developer engagement tracking timer DISABLED to prevent page refreshing
-    console.log('Developer engagement tracking timer DISABLED to prevent page refreshing');
-    
-    /* Original engagement tracking timer commented out:
+    const intervalMs = this.config.updateInterval * 60 * 1000;
     this.updateTimer = setInterval(() => {
-      this.processEngagementTracking();
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.processEngagementTracking();
     }, intervalMs);
 
-    console.log(`Developer engagement tracking started. Checking every ${this.config.updateInterval} minutes.`);
-    */
+    console.log(
+      `[DeveloperEngagement] Checking every ${this.config.updateInterval} minutes (standalone)`
+    );
   }
 
   /**
@@ -284,42 +292,48 @@ class DeveloperEngagementService {
   /**
    * Process engagement tracking for all work items
    */
-  async processEngagementTracking(): Promise<void> {
+  async processEngagementTracking(options: {
+    dryRun?: boolean;
+    canWrite?: (count: number) => boolean;
+    onWrite?: (count: number) => void;
+  } = {}): Promise<{ processed: number; promptsSent: number; simulated: number }> {
+    const stats = { processed: 0, promptsSent: 0, simulated: 0 };
+
     try {
-      // Update last run timestamp
       this.config.lastRunTimestamp = Date.now();
       this.saveConfig();
-      
-      // Get current sprint
+
       const currentSprint = await adoService.getCurrentSprint();
       if (!currentSprint) {
-        console.log('No active sprint found. Skipping engagement tracking.');
-        return;
+        console.log('[DeveloperEngagement] No active sprint; skipping');
+        return stats;
       }
-      
-      // Get work items for the current sprint
+
       const workItems = await adoService.getSprintWorkItems(currentSprint.id);
-      
-      // Process each work item for engagement tracking
+      stats.processed = workItems.length;
+
       for (const workItem of workItems) {
         await this.trackWorkItemEngagement(workItem);
       }
-      
-      // Update developer activity metrics
+
       await this.updateDeveloperActivityMetrics(workItems);
-      
-      // Send reminders if enabled
+
       if (this.config.enableReminders) {
-        await this.sendReminders(workItems);
+        const reminderStats = await this.sendReminders(workItems, options);
+        stats.promptsSent = reminderStats.promptsSent;
+        stats.simulated = reminderStats.simulated;
       }
-      
-      // Save updated store
+
       this.saveStore();
-      
-      console.log(`Processed ${workItems.length} work items for engagement tracking.`);
+      console.log(
+        `[DeveloperEngagement] processed ${stats.processed} items (${stats.promptsSent} prompts, ${stats.simulated} simulated)`
+      );
     } catch (error) {
-      console.error('Error processing engagement tracking:', error);
+      console.error('[DeveloperEngagement] Error:', error);
+      throw error;
     }
+
+    return stats;
   }
 
   /**
@@ -447,130 +461,133 @@ class DeveloperEngagementService {
 
   /**
    * Send reminders for stale work items
-   * @param workItems The work items to check
    */
-  private async sendReminders(workItems: WorkItem[]): Promise<void> {
+  private async sendReminders(
+    workItems: WorkItem[],
+    options: {
+      dryRun?: boolean;
+      canWrite?: (count: number) => boolean;
+      onWrite?: (count: number) => void;
+    } = {}
+  ): Promise<{ promptsSent: number; simulated: number }> {
+    const stats = { promptsSent: 0, simulated: 0 };
+
     try {
       const now = new Date();
-      const enabledTemplates = this.config.reminderTemplates.filter(template => template.enabled);
-      
+      const enabledTemplates = this.config.reminderTemplates.filter((t) => t.enabled);
+
       for (const workItem of workItems) {
-        // Skip completed items
-        if (workItem.state === 'Completed' || workItem.state === 'Closed' || workItem.state === 'Done') {
-          continue;
-        }
-        
-        // Skip items without an assignee
-        if (!workItem.assignedTo) {
-          continue;
-        }
-        
-        // Get work item engagement record
+        if (['Completed', 'Closed', 'Done'].includes(workItem.state)) continue;
+        if (!workItem.assignedTo) continue;
+
         const engagement = this.store.workItemEngagements[workItem.id];
-        if (!engagement) {
-          continue;
-        }
-        
-        // Check if we've already sent a reminder recently (respect cooldown)
+        if (!engagement) continue;
+
         if (engagement.lastReminderDate) {
-          const lastReminder = new Date(engagement.lastReminderDate);
-          const daysSinceLastReminder = Math.floor((now.getTime() - lastReminder.getTime()) / (1000 * 60 * 60 * 24));
-          
-          if (daysSinceLastReminder < this.config.reminderCooldownDays) {
-            continue; // Skip if we've sent a reminder recently
-          }
+          const daysSinceLastReminder = Math.floor(
+            (now.getTime() - new Date(engagement.lastReminderDate).getTime()) /
+              (1000 * 60 * 60 * 24)
+          );
+          if (daysSinceLastReminder < this.config.reminderCooldownDays) continue;
         }
-        
-        // Check each template condition
+
         for (const template of enabledTemplates) {
           let shouldSendReminder = false;
-          let reminderMessage = '';
-          
+
           switch (template.condition) {
             case 'stale':
-              // Check if the item is stale
-              // Only consider Active items and Task type items as stale
-              shouldSendReminder = workItem.state === 'Active' && 
-                                  workItem.type === 'Task' &&
-                                  engagement.daysSinceLastUpdate >= this.config.reminderThresholdDays;
+              shouldSendReminder =
+                workItem.state === 'Active' &&
+                workItem.type === 'Task' &&
+                engagement.daysSinceLastUpdate >= this.config.reminderThresholdDays;
               break;
-              
             case 'blocked':
-              // Check if the item is blocked
-              // Only consider Task type items
-              shouldSendReminder = workItem.type === 'Task' &&
-                                  (workItem.state === 'Blocked' || 
-                                  workItem.tags.some(tag => tag.toLowerCase() === 'blocked'));
+              shouldSendReminder =
+                workItem.type === 'Task' &&
+                (workItem.state === 'Blocked' ||
+                  (workItem.tags || []).some((tag) => tag.toLowerCase() === 'blocked'));
               break;
-              
             case 'high_effort':
-              // Check if it's a high-effort item in progress for a while
-              // Only consider Task type items
-              shouldSendReminder = (workItem.effort !== null && workItem.effort > 8) && 
-                                  (workItem.state === 'Active') &&
-                                  workItem.type === 'Task' &&
-                                  engagement.daysSinceLastUpdate >= 2;
+              shouldSendReminder =
+                workItem.effort !== null &&
+                workItem.effort > 8 &&
+                workItem.state === 'Active' &&
+                workItem.type === 'Task' &&
+                engagement.daysSinceLastUpdate >= 2;
               break;
-              
             case 'missing_info':
-              // Check if important information is missing
-              // Only consider Task type items
-              shouldSendReminder = workItem.type === 'Task' &&
-                                  ((workItem.effort === null || workItem.effort === 0) ||
-                                  (!workItem.description || workItem.description.length < 50));
+              shouldSendReminder =
+                workItem.type === 'Task' &&
+                (workItem.effort === null ||
+                  workItem.effort === 0 ||
+                  !workItem.description ||
+                  workItem.description.length < 50);
               break;
           }
-          
-          if (shouldSendReminder) {
-            // Format the reminder message
-            reminderMessage = this.formatReminderTemplate(template.messageTemplate, workItem, engagement);
-            
-            let adoSuccess = true;
-            let teamsSuccess = true;
-            
-            // Send the reminder to ADO if configured
-            if (this.config.teamsNotifications.sendToAdo) {
-              adoSuccess = await adoService.addWorkItemComment(workItem.id, reminderMessage);
-            }
-            
-            // Send the reminder to Teams if configured
-            if (this.config.teamsNotifications.enabled && this.config.teamsNotifications.sendToTeams && workItem.assignedTo) {
-              // Extract email from "Name <email>" format
-              const assigneeEmail = workItem.assignedTo.match(/<([^>]+)>/)?.[1] || workItem.assignedTo;
-              
-              teamsSuccess = await teamsNotificationService.sendStaleWorkItemNotification(
-                assigneeEmail,
-                workItem.id,
-                workItem.title,
-                engagement.daysSinceLastUpdate
-              );
-            }
-            
-            if (adoSuccess || teamsSuccess) {
-              console.log(`Sent reminder for work item ${workItem.id} based on condition "${template.condition}"`);
-              
-              // Update engagement record
-              engagement.remindersSent += 1;
-              engagement.lastReminderDate = now.toISOString();
-              
-              // Add to reminder history
-              this.store.reminderHistory.push({
-                date: now.toISOString(),
-                workItemId: workItem.id,
-                developerId: workItem.assignedTo || '',
-                reminderType: template.condition,
-                message: reminderMessage
-              });
-              
-              // Only send one reminder per work item per run
-              break;
-            }
+
+          if (!shouldSendReminder) continue;
+
+          const reminderMessage = this.formatReminderTemplate(
+            template.messageTemplate,
+            workItem,
+            engagement
+          );
+
+          const wouldWriteAdo = this.config.teamsNotifications.sendToAdo;
+          if (
+            wouldWriteAdo &&
+            (options.dryRun || (options.canWrite && !options.canWrite(1)))
+          ) {
+            stats.simulated++;
+            console.log(
+              `[DeveloperEngagement][dry-run] would remind #${workItem.id} (${template.condition})`
+            );
+            break;
+          }
+
+          let adoSuccess = true;
+          let teamsSuccess = true;
+
+          if (wouldWriteAdo) {
+            adoSuccess = await adoService.addWorkItemComment(workItem.id, reminderMessage);
+            if (adoSuccess) options.onWrite?.(1);
+          }
+
+          if (
+            this.config.teamsNotifications.enabled &&
+            this.config.teamsNotifications.sendToTeams &&
+            workItem.assignedTo
+          ) {
+            const assigneeEmail =
+              workItem.assignedTo.match(/<([^>]+)>/)?.[1] || workItem.assignedTo;
+            teamsSuccess = await teamsNotificationService.sendStaleWorkItemNotification(
+              assigneeEmail,
+              workItem.id,
+              workItem.title,
+              engagement.daysSinceLastUpdate
+            );
+          }
+
+          if (adoSuccess || teamsSuccess) {
+            stats.promptsSent++;
+            engagement.remindersSent += 1;
+            engagement.lastReminderDate = now.toISOString();
+            this.store.reminderHistory.push({
+              date: now.toISOString(),
+              workItemId: workItem.id,
+              developerId: workItem.assignedTo || '',
+              reminderType: template.condition,
+              message: reminderMessage,
+            });
+            break;
           }
         }
       }
     } catch (error) {
-      console.error('Error sending reminders:', error);
+      console.error('[DeveloperEngagement] Error sending reminders:', error);
     }
+
+    return stats;
   }
 
   /**

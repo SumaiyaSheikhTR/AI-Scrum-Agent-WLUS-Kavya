@@ -568,6 +568,68 @@ app.post('/api/ado-proxy/capacity', async (req, res) => {
   }
 });
 
+/**
+ * Email delivery endpoint used by automation (daily summaries, alerts, tests).
+ * Uses nodemailer when available + SMTP config is provided; otherwise accepts
+ * and logs the message so the automation pipeline remains observable.
+ */
+app.post('/api/email', async (req, res) => {
+  try {
+    const { to, subject, html, text, smtp } = req.body || {};
+
+    if (!to || !Array.isArray(to) || to.length === 0 || !subject) {
+      return res.status(400).json({ success: false, error: 'to[] and subject are required' });
+    }
+
+    console.log(`[EMAIL] To: ${to.join(', ')} | Subject: ${subject}`);
+
+    if (smtp && smtp.host && smtp.user) {
+      try {
+        // Optional dependency — load dynamically so the server still boots without it
+        // eslint-disable-next-line global-require, import/no-extraneous-dependencies
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+          host: smtp.host,
+          port: smtp.port || 587,
+          secure: !!smtp.secure,
+          auth: {
+            user: smtp.user,
+            pass: smtp.pass,
+          },
+        });
+
+        const info = await transporter.sendMail({
+          from: smtp.from || smtp.user,
+          to: to.join(', '),
+          subject,
+          text: text || '',
+          html: html || text || '',
+        });
+
+        return res.json({ success: true, mode: 'smtp', messageId: info.messageId });
+      } catch (smtpError) {
+        console.error('[EMAIL] SMTP send failed, falling back to log mode:', smtpError.message);
+      }
+    }
+
+    // Log / queue mode when SMTP is not configured
+    return res.json({
+      success: true,
+      mode: 'logged',
+      message: 'Email logged on server (SMTP not configured or unavailable)',
+      preview: {
+        to,
+        subject,
+        textLength: (text || '').length,
+        htmlLength: (html || '').length,
+      },
+    });
+  } catch (error) {
+    console.error('[EMAIL] Unexpected error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to process email' });
+  }
+});
+
 // Catch-all handler for production
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => {

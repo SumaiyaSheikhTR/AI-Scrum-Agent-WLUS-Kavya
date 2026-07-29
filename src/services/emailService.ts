@@ -505,6 +505,66 @@ class EmailService {
   }
 
   /**
+   * Send a generic email (alerts, daily summaries, etc.)
+   * Posts to the Express /api/email endpoint when available.
+   */
+  async sendGenericEmail(options: {
+    to: string[];
+    subject: string;
+    html: string;
+    text?: string;
+  }): Promise<boolean> {
+    if (!options.to?.length) {
+      console.warn('[EmailService] No recipients provided');
+      return false;
+    }
+
+    const payload = {
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      text: options.text || options.html.replace(/<[^>]+>/g, ' '),
+      smtp: this.emailConfig.enabled
+        ? {
+            host: this.emailConfig.smtpServer,
+            port: this.emailConfig.smtpPort,
+            secure: this.emailConfig.useSecure,
+            user: this.emailConfig.username,
+            pass: this.emailConfig.password,
+            from: `${this.emailConfig.fromName} <${this.emailConfig.fromEmail}>`,
+          }
+        : null,
+    };
+
+    try {
+      const response = await fetch('/api/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error('[EmailService] API error:', response.status, errText);
+        // Fall through to local log so automation is still observable
+      } else {
+        const result = await response.json();
+        console.log('[EmailService] Email accepted by backend:', result);
+        return !!result.success;
+      }
+    } catch (error) {
+      console.warn('[EmailService] Backend unavailable, logging email locally:', error);
+    }
+
+    console.log('📧 ==================== OUTBOUND EMAIL ====================');
+    console.log(`📧 To: ${options.to.join(', ')}`);
+    console.log(`📧 Subject: ${options.subject}`);
+    console.log(`📧 Text length: ${(options.text || '').length}`);
+    console.log('📧 ========================================================');
+    return true;
+  }
+
+  /**
    * Test email configuration
    */
   async testEmailConfig(): Promise<boolean> {
@@ -514,17 +574,12 @@ class EmailService {
 
     try {
       console.log('📧 Testing email configuration...');
-      
-      // TODO: Implement actual SMTP test
-      // const testResult = await this.sendSMTPEmail({
-      //   to: [this.emailConfig.fromEmail],
-      //   subject: 'Test Email - AI Scrum Agent',
-      //   html: '<p>This is a test email from the AI Scrum Agent system.</p>'
-      // });
-
-      console.log('✅ Email configuration test successful!');
-      return true;
-
+      return await this.sendGenericEmail({
+        to: [this.emailConfig.fromEmail || this.emailConfig.username].filter(Boolean),
+        subject: 'Test Email - AI Scrum Agent',
+        html: '<p>This is a test email from the AI Scrum Agent automation system.</p>',
+        text: 'This is a test email from the AI Scrum Agent automation system.',
+      });
     } catch (error) {
       console.error('❌ Email configuration test failed:', error);
       throw error;

@@ -1,564 +1,614 @@
 /**
  * Ticket Management Service
- * 
- * This service provides functionality for smart ticket management, including:
- * - Automatic status updates based on predefined conditions
- * - Adding contextual comments to work items
- * - Prompting developers for updates on effort estimates and time logs
+ *
+ * Smart ticket automation with JSON-serializable declarative rules
+ * (functions cannot survive localStorage round-trips).
  */
 
 import adoService, { WorkItem } from './adoService';
-import openArenaService from './openArenaService';
+import { RuleCondition } from './rulesEngine';
 
-// Define interfaces for the service
-export interface StatusUpdateRule {
+export interface DeclarativeStatusUpdateRule {
   id: string;
   name: string;
   description: string;
-  condition: (workItem: WorkItem) => boolean;
+  conditions: RuleCondition[];
   targetState: string;
   enabled: boolean;
 }
 
+export interface DeclarativeCommentRule {
+  id: string;
+  name: string;
+  description: string;
+  conditions: RuleCondition[];
+  commentTemplate: string;
+  enabled: boolean;
+  cooldownDays: number;
+}
+
+/** @deprecated kept for Settings form type compatibility */
+export interface StatusUpdateRule {
+  id: string;
+  name: string;
+  description: string;
+  condition?: (workItem: WorkItem) => boolean;
+  conditions?: RuleCondition[];
+  targetState: string;
+  enabled: boolean;
+}
+
+/** @deprecated kept for Settings form type compatibility */
 export interface CommentRule {
   id: string;
   name: string;
   description: string;
-  condition: (workItem: WorkItem) => boolean;
+  condition?: (workItem: WorkItem) => boolean;
+  conditions?: RuleCondition[];
   commentTemplate: string;
   enabled: boolean;
-  cooldownDays: number; // Minimum days between comments
+  cooldownDays: number;
 }
 
 export interface TicketManagementConfig {
-  statusUpdateRules: StatusUpdateRule[];
-  commentRules: CommentRule[];
+  statusUpdateRules: DeclarativeStatusUpdateRule[];
+  commentRules: DeclarativeCommentRule[];
   enableAutoUpdates: boolean;
-  updateInterval: number; // in minutes
+  updateInterval: number;
   lastRunTimestamp: number | null;
 }
 
-// Default configuration
+export interface TicketProcessingOptions {
+  dryRun?: boolean;
+  canWrite?: (count: number) => boolean;
+  onWrite?: (count: number) => void;
+}
+
+export interface TicketProcessingStats {
+  processed: number;
+  statusUpdates: number;
+  comments: number;
+  simulated: number;
+}
+
 const DEFAULT_CONFIG: TicketManagementConfig = {
   statusUpdateRules: [
     {
       id: 'pr_merged_to_qa',
       name: 'PR Merged → Ready for QA',
-      description: 'Move work items to "Ready for QA" when PR is merged',
-      condition: (workItem: WorkItem) => {
-        // Check if the work item has a PR that was merged
-        // This is a simplified condition - in a real implementation, we would
-        // check for PR status in the work item's links or comments
-        return workItem.state === 'In Progress' && 
-               workItem.tags.some(tag => 
-                 tag.toLowerCase().includes('pr') && 
-                 tag.toLowerCase().includes('merged')
-               );
-      },
+      description: 'Move work items to Ready for QA when tagged as PR merged',
+      conditions: [
+        { field: 'state', operator: 'equals', value: 'In Progress' },
+        { field: 'tags', operator: 'contains', value: 'pr-merged', logicalOperator: 'AND' },
+      ],
       targetState: 'Ready for QA',
-      enabled: true
+      enabled: true,
     },
     {
       id: 'stale_active_to_at_risk',
       name: 'Stale Active → At Risk',
-      description: 'Flag work items as "At Risk" when they have been in "Active" state for too long',
-      condition: (workItem: WorkItem) => {
-        // Check if the work item has been in Active state for more than 5 days
-        if (workItem.state !== 'Active' && workItem.state !== 'In Progress') {
-          return false;
-        }
-        
-        const now = new Date();
-        const lastUpdated = new Date(workItem.updatedDate);
-        const daysSinceUpdate = Math.floor((now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24));
-        
-        return daysSinceUpdate >= 5;
-      },
+      description: 'Flag Active/In Progress items stale for 5+ days',
+      conditions: [
+        { field: 'state', operator: 'in', value: ['Active', 'In Progress'] },
+        { field: 'updatedDate', operator: 'days_since', value: 5, logicalOperator: 'AND' },
+      ],
       targetState: 'At Risk',
-      enabled: true
+      enabled: false, // opt-in: state names vary by process template
     },
     {
       id: 'qa_passed_to_ready_for_release',
       name: 'QA Passed → Ready for Release',
-      description: 'Move work items to "Ready for Release" when QA is passed',
-      condition: (workItem: WorkItem) => {
-        // Check if the work item has passed QA
-        return workItem.state === 'Ready for QA' && 
-               workItem.tags.some(tag => 
-                 tag.toLowerCase().includes('qa') && 
-                 tag.toLowerCase().includes('passed')
-               );
-      },
+      description: 'Move Ready for QA items tagged qa-passed',
+      conditions: [
+        { field: 'state', operator: 'equals', value: 'Ready for QA' },
+        { field: 'tags', operator: 'contains', value: 'qa-passed', logicalOperator: 'AND' },
+      ],
       targetState: 'Ready for Release',
-      enabled: true
-    }
+      enabled: true,
+    },
   ],
   commentRules: [
     {
       id: 'missing_effort',
       name: 'Missing Effort Estimate',
-      description: 'Prompt developers to add effort estimates to work items',
-      condition: (workItem: WorkItem) => {
-        // Check if the work item is missing an effort estimate
-        return (workItem.state === 'Active' || workItem.state === 'In Progress') && 
-               (workItem.effort === null || workItem.effort === 0);
-      },
-      commentTemplate: 'This work item is missing an effort estimate. Please update the effort field to help with sprint planning and tracking.',
+      description: 'Prompt for effort on active items without estimates',
+      conditions: [
+        { field: 'state', operator: 'in', value: ['Active', 'In Progress'] },
+        { field: 'effort', operator: 'is_null', value: null, logicalOperator: 'AND' },
+      ],
+      commentTemplate:
+        'This work item is missing an effort estimate. Please update Effort to help with sprint planning.',
       enabled: true,
-      cooldownDays: 2
+      cooldownDays: 2,
     },
     {
       id: 'stale_item',
       name: 'Stale Work Item',
-      description: 'Prompt developers to update stale work items',
-      condition: (workItem: WorkItem) => {
-        // Only consider Active items as stale, not New items
-        if (workItem.state !== 'Active') {
-          return false;
-        }
-        
-        // Only consider Task type items as stale, not QA, DEV, etc.
-        if (workItem.type !== 'Task') {
-          return false;
-        }
-        
-        // Check if the work item has not been updated recently
-        const now = new Date();
-        const lastUpdated = new Date(workItem.updatedDate);
-        const daysSinceUpdate = Math.floor((now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24));
-        
-        return daysSinceUpdate >= 3;
-      },
-      commentTemplate: 'This work item has not been updated in {daysSinceUpdate} days. Please provide a status update or move it to the appropriate state.',
+      description: 'Prompt updates for Active Tasks stale 3+ days',
+      conditions: [
+        { field: 'state', operator: 'equals', value: 'Active' },
+        { field: 'type', operator: 'equals', value: 'Task', logicalOperator: 'AND' },
+        { field: 'updatedDate', operator: 'days_since', value: 3, logicalOperator: 'AND' },
+      ],
+      commentTemplate:
+        'This work item has not been updated in {daysSinceUpdate} days. Please provide a status update or move it to the appropriate state.',
       enabled: true,
-      cooldownDays: 3
+      cooldownDays: 3,
     },
     {
       id: 'high_effort_clarification',
       name: 'High Effort Clarification',
       description: 'Ask for clarification on high-effort items',
-      condition: (workItem: WorkItem) => {
-        // Check if the work item has a high effort estimate
-        return (workItem.effort !== null && workItem.effort > 13);
-      },
-      commentTemplate: 'This work item has a high effort estimate ({effort} points). Consider breaking it down into smaller tasks or provide more details on why this requires significant effort.',
+      conditions: [{ field: 'effort', operator: 'greater_than', value: 13 }],
+      commentTemplate:
+        'This work item has a high effort estimate ({effort} points). Consider breaking it down or clarifying the scope.',
       enabled: true,
-      cooldownDays: 5
-    }
+      cooldownDays: 5,
+    },
   ],
   enableAutoUpdates: true,
-  updateInterval: 60, // Check every 60 minutes
-  lastRunTimestamp: null
+  updateInterval: 60,
+  lastRunTimestamp: null,
 };
 
 class TicketManagementService {
   private config: TicketManagementConfig;
-  private updateTimer: NodeJS.Timeout | null = null;
+  private updateTimer: ReturnType<typeof setInterval> | null = null;
+  private orchestratedMode = false;
+  private lastStats: TicketProcessingStats = {
+    processed: 0,
+    statusUpdates: 0,
+    comments: 0,
+    simulated: 0,
+  };
 
   constructor() {
-    // Load config from localStorage or use defaults
-    this.config = this.loadConfig() || DEFAULT_CONFIG;
-    
-    // Timer initialization DISABLED to prevent page refreshing
-    console.log('Ticket management timer initialization DISABLED to prevent page refreshing');
-    
-    /* Original timer initialization commented out:
-    // Start the update timer if auto-updates are enabled
-    if (this.config.enableAutoUpdates) {
-      this.startUpdateTimer();
-    }
-    */
+    this.config = this.normalizeConfig(this.loadConfig() || DEFAULT_CONFIG);
   }
 
-  /**
-   * Load configuration from localStorage
-   */
+  public setOrchestratedMode(enabled: boolean): void {
+    this.orchestratedMode = enabled;
+    if (enabled) {
+      this.stopUpdateTimer();
+    }
+  }
+
   private loadConfig(): TicketManagementConfig | null {
     try {
       const configStr = localStorage.getItem('ticketManagementConfig');
-      if (configStr) {
-        return JSON.parse(configStr);
-      }
-      return null;
+      if (!configStr) return null;
+      return JSON.parse(configStr);
     } catch (error) {
-      console.error('Error loading ticket management config:', error);
+      console.error('[TicketManagement] load error:', error);
       return null;
     }
   }
 
-  /**
-   * Save configuration to localStorage
-   */
   private saveConfig(): void {
     try {
       localStorage.setItem('ticketManagementConfig', JSON.stringify(this.config));
     } catch (error) {
-      console.error('Error saving ticket management config:', error);
+      console.error('[TicketManagement] save error:', error);
     }
   }
 
   /**
-   * Start the timer for automatic updates
+   * Migrate legacy function-based rules / incomplete stored configs.
    */
+  private normalizeConfig(raw: any): TicketManagementConfig {
+    const base = { ...DEFAULT_CONFIG, ...(raw || {}) };
+
+    const statusUpdateRules: DeclarativeStatusUpdateRule[] = (
+      Array.isArray(raw?.statusUpdateRules) ? raw.statusUpdateRules : DEFAULT_CONFIG.statusUpdateRules
+    )
+      .map((rule: any) => {
+        const defaults = DEFAULT_CONFIG.statusUpdateRules.find((d) => d.id === rule.id);
+        return {
+          id: rule.id || `status_${Date.now()}`,
+          name: rule.name || 'Custom status rule',
+          description: rule.description || '',
+          targetState: rule.targetState,
+          enabled: !!rule.enabled,
+          conditions:
+            Array.isArray(rule.conditions) && rule.conditions.length > 0
+              ? rule.conditions
+              : defaults?.conditions || [],
+        };
+      })
+      .filter((r: DeclarativeStatusUpdateRule) => r.conditions.length > 0 || !!r.targetState);
+
+    const commentRules: DeclarativeCommentRule[] = (
+      Array.isArray(raw?.commentRules) ? raw.commentRules : DEFAULT_CONFIG.commentRules
+    )
+      .map((rule: any) => {
+        const defaults = DEFAULT_CONFIG.commentRules.find((d) => d.id === rule.id);
+        return {
+          id: rule.id || `comment_${Date.now()}`,
+          name: rule.name || 'Custom comment rule',
+          description: rule.description || '',
+          commentTemplate: rule.commentTemplate || defaults?.commentTemplate || 'Please update this work item.',
+          enabled: !!rule.enabled,
+          cooldownDays: typeof rule.cooldownDays === 'number' ? rule.cooldownDays : 2,
+          conditions:
+            Array.isArray(rule.conditions) && rule.conditions.length > 0
+              ? rule.conditions
+              : defaults?.conditions || [],
+        };
+      })
+      .filter((r: DeclarativeCommentRule) => r.conditions.length > 0);
+
+    // If stored rules lost conditions (legacy function serialization), fall back to defaults
+    return {
+      enableAutoUpdates: base.enableAutoUpdates !== false,
+      updateInterval: base.updateInterval || 60,
+      lastRunTimestamp: base.lastRunTimestamp ?? null,
+      statusUpdateRules:
+        statusUpdateRules.length > 0 ? statusUpdateRules : DEFAULT_CONFIG.statusUpdateRules,
+      commentRules: commentRules.length > 0 ? commentRules : DEFAULT_CONFIG.commentRules,
+    };
+  }
+
   private startUpdateTimer(): void {
-    if (this.updateTimer) {
-      clearInterval(this.updateTimer);
-    }
-
-    const intervalMs = this.config.updateInterval * 60 * 1000; // Convert minutes to milliseconds
-    
-    // Auto-update timer DISABLED to prevent page refreshing
-    console.log('Ticket management auto-update timer DISABLED to prevent page refreshing');
-    
-    /* Original auto-update timer commented out:
+    if (this.orchestratedMode) return;
+    if (this.updateTimer) clearInterval(this.updateTimer);
+    const intervalMs = this.config.updateInterval * 60 * 1000;
     this.updateTimer = setInterval(() => {
-      this.processAllWorkItems();
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.processAllWorkItems();
     }, intervalMs);
-    
-    console.log(`Ticket management auto-updates started. Checking every ${this.config.updateInterval} minutes.`);
-    */
   }
 
-  /**
-   * Stop the timer for automatic updates
-   */
   private stopUpdateTimer(): void {
     if (this.updateTimer) {
       clearInterval(this.updateTimer);
       this.updateTimer = null;
-      console.log('Ticket management auto-updates stopped.');
     }
   }
 
-  /**
-   * Update the configuration
-   * @param config New configuration
-   */
   updateConfig(config: Partial<TicketManagementConfig>): void {
-    const wasAutoUpdateEnabled = this.config.enableAutoUpdates;
-    
-    // Update config
-    this.config = { ...this.config, ...config };
-    
-    // Save to localStorage
+    const wasEnabled = this.config.enableAutoUpdates;
+    this.config = this.normalizeConfig({ ...this.config, ...config });
     this.saveConfig();
-    
-    // Handle auto-update timer changes
-    if (!wasAutoUpdateEnabled && this.config.enableAutoUpdates) {
-      this.startUpdateTimer();
-    } else if (wasAutoUpdateEnabled && !this.config.enableAutoUpdates) {
-      this.stopUpdateTimer();
-    } else if (wasAutoUpdateEnabled && this.config.enableAutoUpdates) {
-      // Restart timer with new interval
-      this.startUpdateTimer();
-    }
+
+    if (this.orchestratedMode) return;
+
+    if (!wasEnabled && this.config.enableAutoUpdates) this.startUpdateTimer();
+    else if (wasEnabled && !this.config.enableAutoUpdates) this.stopUpdateTimer();
+    else if (this.config.enableAutoUpdates) this.startUpdateTimer();
   }
 
-  /**
-   * Get the current configuration
-   */
   getConfig(): TicketManagementConfig {
-    return { ...this.config };
+    return JSON.parse(JSON.stringify(this.config));
   }
 
-  /**
-   * Process all work items in the current sprint
-   */
-  async processAllWorkItems(): Promise<void> {
+  async processAllWorkItems(options: TicketProcessingOptions = {}): Promise<TicketProcessingStats> {
+    const stats: TicketProcessingStats = {
+      processed: 0,
+      statusUpdates: 0,
+      comments: 0,
+      simulated: 0,
+    };
+
     try {
-      // Update last run timestamp
       this.config.lastRunTimestamp = Date.now();
       this.saveConfig();
-      
-      // Get current sprint
+
       const currentSprint = await adoService.getCurrentSprint();
       if (!currentSprint) {
-        console.log('No active sprint found. Skipping ticket management processing.');
-        return;
+        console.log('[TicketManagement] No active sprint; skipping');
+        this.lastStats = stats;
+        return stats;
       }
-      
-      // Get work items for the current sprint
+
       const workItems = await adoService.getSprintWorkItems(currentSprint.id);
-      
-      // Process each work item
       for (const workItem of workItems) {
-        await this.processWorkItem(workItem);
+        const itemStats = await this.processWorkItem(workItem, options);
+        stats.processed++;
+        stats.statusUpdates += itemStats.statusUpdates;
+        stats.comments += itemStats.comments;
+        stats.simulated += itemStats.simulated;
       }
-      
-      console.log(`Processed ${workItems.length} work items for ticket management.`);
+
+      console.log(
+        `[TicketManagement] processed ${stats.processed} items (${stats.statusUpdates} status, ${stats.comments} comments, ${stats.simulated} simulated)`
+      );
     } catch (error) {
-      console.error('Error processing work items for ticket management:', error);
+      console.error('[TicketManagement] process error:', error);
+      throw error;
+    }
+
+    this.lastStats = stats;
+    return stats;
+  }
+
+  async processWorkItem(
+    workItem: WorkItem,
+    options: TicketProcessingOptions = {}
+  ): Promise<TicketProcessingStats> {
+    const stats: TicketProcessingStats = {
+      processed: 1,
+      statusUpdates: 0,
+      comments: 0,
+      simulated: 0,
+    };
+
+    const statusResult = await this.checkStatusUpdateRules(workItem, options);
+    stats.statusUpdates += statusResult.applied;
+    stats.simulated += statusResult.simulated;
+
+    const commentResult = await this.checkCommentRules(workItem, options);
+    stats.comments += commentResult.applied;
+    stats.simulated += commentResult.simulated;
+
+    return stats;
+  }
+
+  private evaluateConditions(conditions: RuleCondition[], workItem: WorkItem): boolean {
+    if (!conditions || conditions.length === 0) return false;
+
+    let result = this.evaluateCondition(conditions[0], workItem);
+    for (let i = 1; i < conditions.length; i++) {
+      const condition = conditions[i];
+      const next = this.evaluateCondition(condition, workItem);
+      result = condition.logicalOperator === 'OR' ? result || next : result && next;
+    }
+    return result;
+  }
+
+  private evaluateCondition(condition: RuleCondition, workItem: WorkItem): boolean {
+    const fieldValue = this.getFieldValue(condition.field, workItem);
+
+    switch (condition.operator) {
+      case 'equals':
+        return this.norm(fieldValue) === this.norm(condition.value);
+      case 'not_equals':
+        return this.norm(fieldValue) !== this.norm(condition.value);
+      case 'contains':
+        if (Array.isArray(fieldValue)) {
+          return fieldValue.some((t) =>
+            String(t).toLowerCase().includes(String(condition.value).toLowerCase())
+          );
+        }
+        return String(fieldValue ?? '')
+          .toLowerCase()
+          .includes(String(condition.value).toLowerCase());
+      case 'not_contains':
+        if (Array.isArray(fieldValue)) {
+          return !fieldValue.some((t) =>
+            String(t).toLowerCase().includes(String(condition.value).toLowerCase())
+          );
+        }
+        return !String(fieldValue ?? '')
+          .toLowerCase()
+          .includes(String(condition.value).toLowerCase());
+      case 'greater_than':
+        return Number(fieldValue) > Number(condition.value);
+      case 'less_than':
+        return Number(fieldValue) < Number(condition.value);
+      case 'in':
+        return (
+          Array.isArray(condition.value) &&
+          condition.value.map((v) => this.norm(v)).includes(this.norm(fieldValue))
+        );
+      case 'not_in':
+        return (
+          Array.isArray(condition.value) &&
+          !condition.value.map((v) => this.norm(v)).includes(this.norm(fieldValue))
+        );
+      case 'is_null':
+        return fieldValue == null || fieldValue === '' || fieldValue === 0;
+      case 'is_not_null':
+        return fieldValue != null && fieldValue !== '' && fieldValue !== 0;
+      case 'days_since': {
+        if (!fieldValue) return false;
+        const days = Math.floor(
+          (Date.now() - new Date(fieldValue).getTime()) / (1000 * 60 * 60 * 24)
+        );
+        return days >= Number(condition.value);
+      }
+      case 'regex':
+        try {
+          return new RegExp(condition.value).test(String(fieldValue ?? ''));
+        } catch {
+          return false;
+        }
+      default:
+        return false;
     }
   }
 
-  /**
-   * Process a single work item
-   * @param workItem The work item to process
-   */
-  async processWorkItem(workItem: WorkItem): Promise<void> {
-    try {
-      // Check status update rules
-      await this.checkStatusUpdateRules(workItem);
-      
-      // Check comment rules
-      await this.checkCommentRules(workItem);
-    } catch (error) {
-      console.error(`Error processing work item ${workItem.id}:`, error);
-    }
+  private norm(value: any): any {
+    if (typeof value === 'string') return value.trim().toLowerCase();
+    return value;
   }
 
-  /**
-   * Check status update rules for a work item
-   * @param workItem The work item to check
-   */
-  private async checkStatusUpdateRules(workItem: WorkItem): Promise<void> {
-    // Only process enabled rules
-    const enabledRules = this.config.statusUpdateRules.filter(rule => rule.enabled);
-    
-    for (const rule of enabledRules) {
+  private getFieldValue(field: string, workItem: WorkItem): any {
+    const aliases: Record<string, keyof WorkItem | string> = {
+      changedDate: 'updatedDate',
+      'System.State': 'state',
+      'System.Tags': 'tags',
+    };
+    const key = (aliases[field] || field) as keyof WorkItem;
+    return workItem[key];
+  }
+
+  private async checkStatusUpdateRules(
+    workItem: WorkItem,
+    options: TicketProcessingOptions
+  ): Promise<{ applied: number; simulated: number }> {
+    let applied = 0;
+    let simulated = 0;
+
+    for (const rule of this.config.statusUpdateRules.filter((r) => r.enabled)) {
       try {
-        // Skip if the work item is already in the target state
-        if (workItem.state === rule.targetState) {
+        if (workItem.state === rule.targetState) continue;
+        if (!this.evaluateConditions(rule.conditions, workItem)) continue;
+
+        if (options.dryRun || (options.canWrite && !options.canWrite(1))) {
+          simulated++;
+          console.log(
+            `[TicketManagement][dry-run] would move #${workItem.id} → "${rule.targetState}" (${rule.name})`
+          );
           continue;
         }
-        
-        // Check if the rule condition is met
-        if (rule.condition(workItem)) {
-          // Update the work item state
-          const updatedWorkItem = await adoService.updateWorkItem(workItem.id, {
-            'System.State': rule.targetState
-          });
-          
-          if (updatedWorkItem) {
-            console.log(`Updated work item ${workItem.id} state from "${workItem.state}" to "${rule.targetState}" based on rule "${rule.name}"`);
-            
-            // Add a comment explaining the automatic update
-            await adoService.addWorkItemComment(
-              workItem.id,
-              `Automatically moved from "${workItem.state}" to "${rule.targetState}" based on rule: ${rule.description}`
-            );
-          }
+
+        const updated = await adoService.updateWorkItem(workItem.id, {
+          state: rule.targetState,
+        });
+        if (updated) {
+          options.onWrite?.(1);
+          applied++;
+          await adoService.addWorkItemComment(
+            workItem.id,
+            `Automatically moved from "${workItem.state}" to "${rule.targetState}" based on rule: ${rule.description}`
+          );
+          options.onWrite?.(1);
+          workItem.state = rule.targetState;
         }
       } catch (error) {
-        console.error(`Error applying status update rule "${rule.name}" to work item ${workItem.id}:`, error);
+        console.error(`[TicketManagement] status rule "${rule.name}" failed:`, error);
       }
     }
+
+    return { applied, simulated };
   }
 
-  /**
-   * Check comment rules for a work item
-   * @param workItem The work item to check
-   */
-  private async checkCommentRules(workItem: WorkItem): Promise<void> {
-    // Only process enabled rules
-    const enabledRules = this.config.commentRules.filter(rule => rule.enabled);
-    
-    for (const rule of enabledRules) {
+  private async checkCommentRules(
+    workItem: WorkItem,
+    options: TicketProcessingOptions
+  ): Promise<{ applied: number; simulated: number }> {
+    let applied = 0;
+    let simulated = 0;
+
+    for (const rule of this.config.commentRules.filter((r) => r.enabled)) {
       try {
-        // Check if the rule condition is met
-        if (rule.condition(workItem)) {
-          // Check if we've already commented recently (respect cooldown)
-          const shouldComment = await this.shouldAddComment(workItem, rule);
-          
-          if (shouldComment) {
-            // Format the comment template with work item data
-            const comment = this.formatCommentTemplate(rule.commentTemplate, workItem);
-            
-            // Add the comment
-            const success = await adoService.addWorkItemComment(workItem.id, comment);
-            
-            if (success) {
-              console.log(`Added comment to work item ${workItem.id} based on rule "${rule.name}"`);
-            }
-          }
+        if (!this.evaluateConditions(rule.conditions, workItem)) continue;
+        if (!(await this.shouldAddComment(workItem, rule))) continue;
+
+        const comment = this.formatCommentTemplate(rule.commentTemplate, workItem);
+
+        if (options.dryRun || (options.canWrite && !options.canWrite(1))) {
+          simulated++;
+          console.log(
+            `[TicketManagement][dry-run] would comment on #${workItem.id} (${rule.name}): ${comment}`
+          );
+          continue;
+        }
+
+        const success = await adoService.addWorkItemComment(workItem.id, comment);
+        if (success) {
+          options.onWrite?.(1);
+          applied++;
         }
       } catch (error) {
-        console.error(`Error applying comment rule "${rule.name}" to work item ${workItem.id}:`, error);
+        console.error(`[TicketManagement] comment rule "${rule.name}" failed:`, error);
       }
     }
+
+    return { applied, simulated };
   }
 
-  /**
-   * Check if we should add a comment based on cooldown period
-   * @param workItem The work item to check
-   * @param rule The comment rule
-   */
-  private async shouldAddComment(workItem: WorkItem, rule: CommentRule): Promise<boolean> {
-    // In a real implementation, we would check the work item's comment history
-    // to see if we've already added a similar comment recently
-    
-    // For now, we'll use a simplified approach based on the last updated date
+  private async shouldAddComment(
+    workItem: WorkItem,
+    rule: DeclarativeCommentRule
+  ): Promise<boolean> {
     const now = new Date();
     const lastUpdated = new Date(workItem.updatedDate);
-    const daysSinceUpdate = Math.floor((now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24));
-    
-    // Only comment if the item hasn't been updated in the cooldown period
+    const daysSinceUpdate = Math.floor(
+      (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24)
+    );
     return daysSinceUpdate >= rule.cooldownDays;
   }
 
-  /**
-   * Format a comment template with work item data
-   * @param template The comment template
-   * @param workItem The work item data
-   */
   private formatCommentTemplate(template: string, workItem: WorkItem): string {
-    // Replace placeholders with actual values
-    let formattedComment = template;
-    
-    // Calculate days since update
     const now = new Date();
     const lastUpdated = new Date(workItem.updatedDate);
-    const daysSinceUpdate = Math.floor((now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24));
-    
-    // Replace placeholders
-    formattedComment = formattedComment.replace('{id}', workItem.id.toString());
-    formattedComment = formattedComment.replace('{title}', workItem.title);
-    formattedComment = formattedComment.replace('{state}', workItem.state);
-    formattedComment = formattedComment.replace('{assignedTo}', workItem.assignedTo || 'Unassigned');
-    formattedComment = formattedComment.replace('{effort}', (workItem.effort || 0).toString());
-    formattedComment = formattedComment.replace('{daysSinceUpdate}', daysSinceUpdate.toString());
-    
-    return formattedComment;
+    const daysSinceUpdate = Math.floor(
+      (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24)
+    );
+
+    return template
+      .replace(/\{id\}/g, workItem.id.toString())
+      .replace(/\{title\}/g, workItem.title)
+      .replace(/\{state\}/g, workItem.state)
+      .replace(/\{assignedTo\}/g, workItem.assignedTo || 'Unassigned')
+      .replace(/\{effort\}/g, (workItem.effort || 0).toString())
+      .replace(/\{daysSinceUpdate\}/g, daysSinceUpdate.toString());
   }
 
-  /**
-   * Run the ticket management process manually
-   */
-  async runManually(): Promise<void> {
-    console.log('Running ticket management process manually...');
-    await this.processAllWorkItems();
-    console.log('Manual ticket management process completed.');
+  async runManually(options: TicketProcessingOptions = {}): Promise<TicketProcessingStats> {
+    return this.processAllWorkItems(options);
   }
 
-  /**
-   * Get a summary of the ticket management process
-   */
   async getProcessingSummary(): Promise<{
     lastRun: string | null;
     statusUpdatesApplied: number;
     commentsAdded: number;
     pendingUpdates: number;
   }> {
-    // In a real implementation, we would track these metrics
-    // For now, we'll return placeholder data
     return {
-      lastRun: this.config.lastRunTimestamp ? new Date(this.config.lastRunTimestamp).toLocaleString() : null,
-      statusUpdatesApplied: 0,
-      commentsAdded: 0,
-      pendingUpdates: 0
+      lastRun: this.config.lastRunTimestamp
+        ? new Date(this.config.lastRunTimestamp).toLocaleString()
+        : null,
+      statusUpdatesApplied: this.lastStats.statusUpdates,
+      commentsAdded: this.lastStats.comments,
+      pendingUpdates: this.lastStats.simulated,
     };
   }
 
-  /**
-   * Add a custom status update rule
-   * @param rule The rule to add
-   */
-  addStatusUpdateRule(rule: Omit<StatusUpdateRule, 'id'>): string {
+  addStatusUpdateRule(rule: Omit<DeclarativeStatusUpdateRule, 'id'>): string {
     const id = `custom_${Date.now()}`;
-    const newRule: StatusUpdateRule = {
-      ...rule,
-      id
-    };
-    
-    this.config.statusUpdateRules.push(newRule);
+    this.config.statusUpdateRules.push({ ...rule, id });
     this.saveConfig();
-    
     return id;
   }
 
-  /**
-   * Add a custom comment rule
-   * @param rule The rule to add
-   */
-  addCommentRule(rule: Omit<CommentRule, 'id'>): string {
+  addCommentRule(rule: Omit<DeclarativeCommentRule, 'id'>): string {
     const id = `custom_${Date.now()}`;
-    const newRule: CommentRule = {
-      ...rule,
-      id
-    };
-    
-    this.config.commentRules.push(newRule);
+    this.config.commentRules.push({ ...rule, id });
     this.saveConfig();
-    
     return id;
   }
 
-  /**
-   * Delete a status update rule
-   * @param id The ID of the rule to delete
-   */
   deleteStatusUpdateRule(id: string): boolean {
-    const initialLength = this.config.statusUpdateRules.length;
-    this.config.statusUpdateRules = this.config.statusUpdateRules.filter(rule => rule.id !== id);
-    
-    if (this.config.statusUpdateRules.length !== initialLength) {
+    const before = this.config.statusUpdateRules.length;
+    this.config.statusUpdateRules = this.config.statusUpdateRules.filter((r) => r.id !== id);
+    if (this.config.statusUpdateRules.length !== before) {
       this.saveConfig();
       return true;
     }
-    
     return false;
   }
 
-  /**
-   * Delete a comment rule
-   * @param id The ID of the rule to delete
-   */
   deleteCommentRule(id: string): boolean {
-    const initialLength = this.config.commentRules.length;
-    this.config.commentRules = this.config.commentRules.filter(rule => rule.id !== id);
-    
-    if (this.config.commentRules.length !== initialLength) {
+    const before = this.config.commentRules.length;
+    this.config.commentRules = this.config.commentRules.filter((r) => r.id !== id);
+    if (this.config.commentRules.length !== before) {
       this.saveConfig();
       return true;
     }
-    
     return false;
   }
 
-  /**
-   * Update a status update rule
-   * @param id The ID of the rule to update
-   * @param updates The updates to apply
-   */
-  updateStatusUpdateRule(id: string, updates: Partial<Omit<StatusUpdateRule, 'id'>>): boolean {
-    const ruleIndex = this.config.statusUpdateRules.findIndex(rule => rule.id === id);
-    
-    if (ruleIndex >= 0) {
-      this.config.statusUpdateRules[ruleIndex] = {
-        ...this.config.statusUpdateRules[ruleIndex],
-        ...updates
-      };
-      
-      this.saveConfig();
-      return true;
-    }
-    
-    return false;
+  updateStatusUpdateRule(
+    id: string,
+    updates: Partial<Omit<DeclarativeStatusUpdateRule, 'id'>>
+  ): boolean {
+    const idx = this.config.statusUpdateRules.findIndex((r) => r.id === id);
+    if (idx < 0) return false;
+    this.config.statusUpdateRules[idx] = { ...this.config.statusUpdateRules[idx], ...updates };
+    this.saveConfig();
+    return true;
   }
 
-  /**
-   * Update a comment rule
-   * @param id The ID of the rule to update
-   * @param updates The updates to apply
-   */
-  updateCommentRule(id: string, updates: Partial<Omit<CommentRule, 'id'>>): boolean {
-    const ruleIndex = this.config.commentRules.findIndex(rule => rule.id === id);
-    
-    if (ruleIndex >= 0) {
-      this.config.commentRules[ruleIndex] = {
-        ...this.config.commentRules[ruleIndex],
-        ...updates
-      };
-      
-      this.saveConfig();
-      return true;
-    }
-    
-    return false;
+  updateCommentRule(id: string, updates: Partial<Omit<DeclarativeCommentRule, 'id'>>): boolean {
+    const idx = this.config.commentRules.findIndex((r) => r.id === id);
+    if (idx < 0) return false;
+    this.config.commentRules[idx] = { ...this.config.commentRules[idx], ...updates };
+    this.saveConfig();
+    return true;
   }
 }
 
-// Export a singleton instance
 export const ticketManagementService = new TicketManagementService();
-
 export default ticketManagementService;
