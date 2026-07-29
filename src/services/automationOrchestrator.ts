@@ -26,6 +26,7 @@ import notificationAlertingSystem from './notificationAlertingSystem';
 import ticketManagementService from './ticketManagementService';
 import sentimentAnalysisBackgroundService from './sentimentAnalysisBackgroundService';
 import developerEngagementService from './developerEngagementService';
+import automationReportsService from './automationReportsService';
 
 const STORAGE_KEY = 'automation_orchestrator_config';
 const LOG_STORAGE_KEY = 'automation_orchestrator_logs';
@@ -251,10 +252,13 @@ class AutomationOrchestrator {
           result = await this.runTicketManagement();
           break;
         case 'sentiment':
-          result = await this.runSentiment();
+          result = await this.runSentiment(opts.manual);
           break;
         case 'developerEngagement':
           result = await this.runDeveloperEngagement();
+          break;
+        case 'velocityReport':
+          result = await this.runVelocityReport(opts.manual);
           break;
         default:
           result = {
@@ -422,41 +426,91 @@ class AutomationOrchestrator {
     };
   }
 
-  private async runSentiment(): Promise<AutomationJobResult> {
+  private async runSentiment(manual: boolean): Promise<AutomationJobResult> {
     const startedAt = new Date().toISOString();
-    await sentimentAnalysisBackgroundService.updateSentimentData();
-    const stats = sentimentAnalysisBackgroundService.getCacheStats();
+    const reportsCfg = automationReportsService.getConfig().sentimentDigest;
+
+    if (!reportsCfg.enabled && !manual) {
+      return {
+        serviceId: 'sentiment',
+        status: 'skipped',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        dryRun: this.config.dryRun,
+        summary: 'Sentiment digest disabled in reports config',
+      };
+    }
+
+    const digest = await automationReportsService.runAndDeliverSentimentDigest({
+      force: manual,
+    });
+
+    if (!digest.delivered && digest.overallSentiment == null) {
+      return {
+        serviceId: 'sentiment',
+        status: 'skipped',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        dryRun: this.config.dryRun,
+        summary: 'No sentiment data available for the current sprint',
+      };
+    }
+
     return {
       serviceId: 'sentiment',
       status: 'success',
       startedAt,
       finishedAt: new Date().toISOString(),
       dryRun: this.config.dryRun,
-      summary: `Sentiment cache refreshed (${stats.validEntries} valid entries)`,
-      itemsProcessed: stats.totalEntries,
+      summary: digest.delivered
+        ? `Sentiment digest delivered (${digest.overallSentiment}, score ${digest.score?.toFixed(2)})${
+            digest.alertRaised ? ' — ALERT' : ''
+          }`
+        : `Sentiment analyzed (${digest.overallSentiment}) — digest not due yet`,
+      actionsTaken: digest.delivered ? 1 : 0,
+      details: {
+        managersNotified: digest.managersNotified,
+        alertRaised: digest.alertRaised,
+        score: digest.score,
+      },
     };
   }
 
   private async runDeveloperEngagement(): Promise<AutomationJobResult> {
     const startedAt = new Date().toISOString();
-    const cfg = developerEngagementService.getConfig();
+    const reportsCfg = automationReportsService.getConfig().developerReminders;
 
-    if (!cfg.trackingEnabled) {
-      return {
-        serviceId: 'developerEngagement',
-        status: 'skipped',
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        dryRun: this.config.dryRun,
-        summary: 'Developer engagement tracking disabled',
-      };
+    if (!reportsCfg.enabled) {
+      // Fall back to legacy engagement tracker if reports reminders disabled
+      const cfg = developerEngagementService.getConfig();
+      if (!cfg.trackingEnabled) {
+        return {
+          serviceId: 'developerEngagement',
+          status: 'skipped',
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          dryRun: this.config.dryRun,
+          summary: 'Developer task reminders disabled',
+        };
+      }
     }
 
-    const stats = await developerEngagementService.processEngagementTracking({
+    const reminderStats = await automationReportsService.sendDeveloperTaskReminders({
       dryRun: this.config.dryRun,
       canWrite: (n) => this.canPerformWrite(n),
       onWrite: (n) => this.recordWrite(n),
     });
+
+    // Keep engagement metrics store updated as a secondary pass (no extra ADO writes if dry-run)
+    try {
+      await developerEngagementService.processEngagementTracking({
+        dryRun: true, // reminders already handled above; avoid double-commenting
+        canWrite: () => false,
+        onWrite: () => undefined,
+      });
+    } catch (error) {
+      console.warn('[AutomationOrchestrator] engagement metrics pass failed:', error);
+    }
 
     return {
       serviceId: 'developerEngagement',
@@ -464,10 +518,53 @@ class AutomationOrchestrator {
       startedAt,
       finishedAt: new Date().toISOString(),
       dryRun: this.config.dryRun,
-      summary: `Engagement pass: ${stats.promptsSent} prompts, ${stats.simulated} simulated`,
-      itemsProcessed: stats.processed,
-      actionsTaken: stats.promptsSent,
-      actionsSimulated: stats.simulated,
+      summary: `Task reminders: ${reminderStats.developersNotified} developer(s), ${reminderStats.tasksIncluded} task(s)`,
+      itemsProcessed: reminderStats.tasksIncluded,
+      actionsTaken: reminderStats.developersNotified,
+      actionsSimulated: reminderStats.simulated,
+      details: { channels: reminderStats.channelResults },
+    };
+  }
+
+  private async runVelocityReport(manual: boolean): Promise<AutomationJobResult> {
+    const startedAt = new Date().toISOString();
+    const cfg = automationReportsService.getConfig().velocityReport;
+
+    if (!cfg.enabled && !manual) {
+      return {
+        serviceId: 'velocityReport',
+        status: 'skipped',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        dryRun: this.config.dryRun,
+        summary: 'Velocity report disabled in reports config',
+      };
+    }
+
+    if (!manual && !automationReportsService.isVelocityReportDueNow()) {
+      return {
+        serviceId: 'velocityReport',
+        status: 'skipped',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        dryRun: this.config.dryRun,
+        summary: 'Not within the configured velocity report window',
+      };
+    }
+
+    const stats = await automationReportsService.sendManagerVelocityReport({ force: manual });
+
+    return {
+      serviceId: 'velocityReport',
+      status: stats.delivered ? 'success' : 'skipped',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      dryRun: this.config.dryRun,
+      summary: stats.delivered
+        ? `Velocity report sent for ${stats.sprintName} (${stats.managersNotified} manager recipient(s))`
+        : 'Velocity report not delivered',
+      actionsTaken: stats.delivered ? 1 : 0,
+      details: { managersNotified: stats.managersNotified },
     };
   }
 
@@ -557,7 +654,7 @@ class AutomationOrchestrator {
   private loadConfig(): AutomationOrchestratorConfig {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { ...DEFAULT_ORCHESTRATOR_CONFIG };
+      if (!raw) return JSON.parse(JSON.stringify(DEFAULT_ORCHESTRATOR_CONFIG));
       const parsed = JSON.parse(raw);
       return {
         ...DEFAULT_ORCHESTRATOR_CONFIG,
@@ -569,7 +666,7 @@ class AutomationOrchestrator {
         },
       };
     } catch {
-      return { ...DEFAULT_ORCHESTRATOR_CONFIG };
+      return JSON.parse(JSON.stringify(DEFAULT_ORCHESTRATOR_CONFIG));
     }
   }
 

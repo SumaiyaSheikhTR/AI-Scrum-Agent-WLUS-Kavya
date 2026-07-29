@@ -63,6 +63,9 @@ import notificationAlertingSystem, {
 } from '../../services/notificationAlertingSystem';
 import sentimentAnalysisBackgroundService from '../../services/sentimentAnalysisBackgroundService';
 import automationOrchestrator from '../../services/automationOrchestrator';
+import automationReportsService, {
+  AutomationReportsConfig,
+} from '../../services/automationReportsService';
 import {
   AUTOMATION_EVENT,
   AutomationExecutionLogEntry,
@@ -153,6 +156,7 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
   const [alertingConfig, setAlertingConfig] = useState<AlertingConfig | null>(null);
   const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
   const [sentimentStats, setSentimentStats] = useState<any>(null);
+  const [reportsConfig, setReportsConfig] = useState<AutomationReportsConfig | null>(null);
 
   // Dialogs
   const [summaryDialogOpen, setSummaryDialogOpen] = useState(false);
@@ -184,6 +188,7 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
       setAlertingConfig(notificationAlertingSystem.getConfig());
       setAlertRules(notificationAlertingSystem.getAlertRules());
       setSentimentStats(sentimentAnalysisBackgroundService.getCacheStats());
+      setReportsConfig(automationReportsService.getConfig());
     } catch (error) {
       console.error('Error loading service states:', error);
       showMessage('error', 'Failed to load automation settings');
@@ -570,6 +575,7 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
           <Tab label="Git/PR Monitoring" />
           <Tab label="Alerts & Notifications" />
           <Tab label="Sentiment Analysis" />
+          <Tab label="Reports & Reminders" />
           <Tab label="Execution Log" />
         </Tabs>
       </Box>
@@ -661,11 +667,12 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
 
           <Grid item xs={12} md={6}>
             <ServiceStatusCard
-              title="Sentiment Analysis"
-              description="Background sentiment monitoring and caching"
+              title="Sentiment Analysis Digest"
+              description="Analyzes team comments and sends managers a sentiment digest/alert"
               enabled={!!orchestratorConfig?.services.sentiment}
               onToggle={(enabled) => automationOrchestrator.setServiceEnabled('sentiment', enabled)}
               onRun={() => runService('sentiment')}
+              onConfigure={() => setActiveTab(6)}
               icon={<NotificationsIcon color="secondary" />}
               stats={
                 sentimentStats && (
@@ -684,14 +691,39 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
 
           <Grid item xs={12} md={6}>
             <ServiceStatusCard
-              title="Developer Engagement"
-              description="Inactive item reminders for assignees"
+              title="Developer Task Reminders"
+              description="Reminds developers about incomplete / stale tasks to complete"
               enabled={!!orchestratorConfig?.services.developerEngagement}
               onToggle={(enabled) =>
                 automationOrchestrator.setServiceEnabled('developerEngagement', enabled)
               }
               onRun={() => runService('developerEngagement')}
+              onConfigure={() => setActiveTab(6)}
               icon={<ScheduleIcon color="secondary" />}
+            />
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <ServiceStatusCard
+              title="Manager Velocity Report"
+              description="Sends velocity, completion, and workload data to managers"
+              enabled={!!orchestratorConfig?.services.velocityReport}
+              onToggle={(enabled) =>
+                automationOrchestrator.setServiceEnabled('velocityReport', enabled)
+              }
+              onRun={() => runService('velocityReport')}
+              onConfigure={() => setActiveTab(6)}
+              icon={<ScheduleIcon color="primary" />}
+              stats={
+                reportsConfig && (
+                  <Typography variant="caption" color="text.secondary">
+                    Daily at {reportsConfig.velocityReport.dailyTime} →{' '}
+                    {(reportsConfig.velocityReport.managerEmails || []).length ||
+                      'email-config'}{' '}
+                    manager recipient(s)
+                  </Typography>
+                )
+              }
             />
           </Grid>
         </Grid>
@@ -1136,6 +1168,10 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
         <Typography variant="h5" gutterBottom>
           Sentiment Analysis
         </Typography>
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Scheduled digests for managers are configured under the <strong>Reports & Reminders</strong> tab.
+          This view shows cache health; use Run to analyze comments and deliver the digest.
+        </Alert>
         <Paper sx={{ p: 3 }}>
           {sentimentStats && (
             <Grid container spacing={3}>
@@ -1170,7 +1206,7 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
                     onClick={() => runService('sentiment')}
                     disabled={loading}
                   >
-                    Refresh Now
+                    Analyze & Send Digest
                   </Button>
                   <Button
                     variant="outlined"
@@ -1190,6 +1226,394 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
       </TabPanel>
 
       <TabPanel value={activeTab} index={6}>
+        <Typography variant="h5" gutterBottom>
+          Reports & Reminders
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Configure developer task reminders, manager velocity reports, and sentiment digests.
+          Manager emails fall back to Settings → Email recipients when left blank.
+        </Typography>
+
+        {reportsConfig && (
+          <Grid container spacing={3}>
+            <Grid item xs={12}>
+              <Paper sx={{ p: 3 }}>
+                <Typography variant="h6" gutterBottom>
+                  Developer Task Reminders
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={4}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={reportsConfig.developerReminders.enabled}
+                          onChange={(e) => {
+                            const next = automationReportsService.updateConfig({
+                              developerReminders: {
+                                ...reportsConfig.developerReminders,
+                                enabled: e.target.checked,
+                              },
+                            });
+                            setReportsConfig(next);
+                            automationOrchestrator.setServiceEnabled(
+                              'developerEngagement',
+                              e.target.checked
+                            );
+                          }}
+                        />
+                      }
+                      label="Enabled"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      type="number"
+                      label="Stale days before reminder"
+                      value={reportsConfig.developerReminders.staleDays}
+                      onChange={(e) => {
+                        const next = automationReportsService.updateConfig({
+                          developerReminders: {
+                            ...reportsConfig.developerReminders,
+                            staleDays: Math.max(1, parseInt(e.target.value) || 2),
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      type="number"
+                      label="Cooldown (hours)"
+                      value={reportsConfig.developerReminders.cooldownHours}
+                      onChange={(e) => {
+                        const next = automationReportsService.updateConfig({
+                          developerReminders: {
+                            ...reportsConfig.developerReminders,
+                            cooldownHours: Math.max(1, parseInt(e.target.value) || 24),
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Channels</InputLabel>
+                      <Select
+                        multiple
+                        label="Channels"
+                        value={reportsConfig.developerReminders.channels}
+                        onChange={(e) => {
+                          const channels = e.target.value as AutomationReportsConfig['developerReminders']['channels'];
+                          const next = automationReportsService.updateConfig({
+                            developerReminders: {
+                              ...reportsConfig.developerReminders,
+                              channels,
+                            },
+                          });
+                          setReportsConfig(next);
+                        }}
+                        renderValue={(selected) => (selected as string[]).join(', ')}
+                      >
+                        {(['ado', 'email', 'teams', 'console'] as const).map((ch) => (
+                          <MenuItem key={ch} value={ch}>
+                            {ch}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={reportsConfig.developerReminders.includeBacklogAssigned}
+                          onChange={(e) => {
+                            const next = automationReportsService.updateConfig({
+                              developerReminders: {
+                                ...reportsConfig.developerReminders,
+                                includeBacklogAssigned: e.target.checked,
+                              },
+                            });
+                            setReportsConfig(next);
+                          }}
+                        />
+                      }
+                      label="Include assigned backlog Tasks/Bugs"
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Button
+                      variant="contained"
+                      startIcon={<PlayIcon />}
+                      disabled={loading}
+                      onClick={() => runService('developerEngagement')}
+                    >
+                      Send Developer Reminders Now
+                    </Button>
+                  </Grid>
+                </Grid>
+              </Paper>
+            </Grid>
+
+            <Grid item xs={12}>
+              <Paper sx={{ p: 3 }}>
+                <Typography variant="h6" gutterBottom>
+                  Manager Velocity Report
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={4}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={reportsConfig.velocityReport.enabled}
+                          onChange={(e) => {
+                            const next = automationReportsService.updateConfig({
+                              velocityReport: {
+                                ...reportsConfig.velocityReport,
+                                enabled: e.target.checked,
+                              },
+                            });
+                            setReportsConfig(next);
+                            automationOrchestrator.setServiceEnabled(
+                              'velocityReport',
+                              e.target.checked
+                            );
+                          }}
+                        />
+                      }
+                      label="Enabled"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      label="Daily time (HH:MM)"
+                      value={reportsConfig.velocityReport.dailyTime}
+                      onChange={(e) => {
+                        const next = automationReportsService.updateConfig({
+                          velocityReport: {
+                            ...reportsConfig.velocityReport,
+                            dailyTime: e.target.value,
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      type="number"
+                      label="Historical sprints"
+                      value={reportsConfig.velocityReport.historicalSprints}
+                      onChange={(e) => {
+                        const next = automationReportsService.updateConfig({
+                          velocityReport: {
+                            ...reportsConfig.velocityReport,
+                            historicalSprints: Math.max(1, parseInt(e.target.value) || 3),
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Manager emails (comma-separated)"
+                      helperText="Leave blank to use Settings → Email schedule recipients"
+                      value={(reportsConfig.velocityReport.managerEmails || []).join(', ')}
+                      onChange={(e) => {
+                        const managerEmails = e.target.value
+                          .split(',')
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        const next = automationReportsService.updateConfig({
+                          velocityReport: {
+                            ...reportsConfig.velocityReport,
+                            managerEmails,
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Channels</InputLabel>
+                      <Select
+                        multiple
+                        label="Channels"
+                        value={reportsConfig.velocityReport.channels}
+                        onChange={(e) => {
+                          const channels = e.target
+                            .value as AutomationReportsConfig['velocityReport']['channels'];
+                          const next = automationReportsService.updateConfig({
+                            velocityReport: {
+                              ...reportsConfig.velocityReport,
+                              channels,
+                            },
+                          });
+                          setReportsConfig(next);
+                        }}
+                        renderValue={(selected) => (selected as string[]).join(', ')}
+                      >
+                        {(['email', 'teams', 'console'] as const).map((ch) => (
+                          <MenuItem key={ch} value={ch}>
+                            {ch}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Button
+                      variant="contained"
+                      startIcon={<PlayIcon />}
+                      disabled={loading}
+                      onClick={() => runService('velocityReport')}
+                    >
+                      Send Velocity Report Now
+                    </Button>
+                  </Grid>
+                </Grid>
+              </Paper>
+            </Grid>
+
+            <Grid item xs={12}>
+              <Paper sx={{ p: 3 }}>
+                <Typography variant="h6" gutterBottom>
+                  Sentiment Analysis Digest
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={4}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={reportsConfig.sentimentDigest.enabled}
+                          onChange={(e) => {
+                            const next = automationReportsService.updateConfig({
+                              sentimentDigest: {
+                                ...reportsConfig.sentimentDigest,
+                                enabled: e.target.checked,
+                              },
+                            });
+                            setReportsConfig(next);
+                            automationOrchestrator.setServiceEnabled('sentiment', e.target.checked);
+                          }}
+                        />
+                      }
+                      label="Enabled"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <TextField
+                      fullWidth
+                      type="number"
+                      label="Negative alert threshold"
+                      helperText="Alert managers when score drops below this"
+                      value={reportsConfig.sentimentDigest.negativeThreshold}
+                      onChange={(e) => {
+                        const next = automationReportsService.updateConfig({
+                          sentimentDigest: {
+                            ...reportsConfig.sentimentDigest,
+                            negativeThreshold: Number(e.target.value),
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={reportsConfig.sentimentDigest.alwaysSendDigest}
+                          onChange={(e) => {
+                            const next = automationReportsService.updateConfig({
+                              sentimentDigest: {
+                                ...reportsConfig.sentimentDigest,
+                                alwaysSendDigest: e.target.checked,
+                              },
+                            });
+                            setReportsConfig(next);
+                          }}
+                        />
+                      }
+                      label="Always send daily digest"
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Manager emails (comma-separated)"
+                      helperText="Leave blank to use Settings → Email schedule recipients"
+                      value={(reportsConfig.sentimentDigest.managerEmails || []).join(', ')}
+                      onChange={(e) => {
+                        const managerEmails = e.target.value
+                          .split(',')
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        const next = automationReportsService.updateConfig({
+                          sentimentDigest: {
+                            ...reportsConfig.sentimentDigest,
+                            managerEmails,
+                          },
+                        });
+                        setReportsConfig(next);
+                      }}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Channels</InputLabel>
+                      <Select
+                        multiple
+                        label="Channels"
+                        value={reportsConfig.sentimentDigest.channels}
+                        onChange={(e) => {
+                          const channels = e.target
+                            .value as AutomationReportsConfig['sentimentDigest']['channels'];
+                          const next = automationReportsService.updateConfig({
+                            sentimentDigest: {
+                              ...reportsConfig.sentimentDigest,
+                              channels,
+                            },
+                          });
+                          setReportsConfig(next);
+                        }}
+                        renderValue={(selected) => (selected as string[]).join(', ')}
+                      >
+                        {(['email', 'teams', 'console'] as const).map((ch) => (
+                          <MenuItem key={ch} value={ch}>
+                            {ch}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Button
+                      variant="contained"
+                      startIcon={<PlayIcon />}
+                      disabled={loading}
+                      onClick={() => runService('sentiment')}
+                    >
+                      Run Sentiment Digest Now
+                    </Button>
+                  </Grid>
+                </Grid>
+              </Paper>
+            </Grid>
+          </Grid>
+        )}
+      </TabPanel>
+
+      <TabPanel value={activeTab} index={7}>
         <Typography variant="h5" gutterBottom>
           Execution Log
         </Typography>

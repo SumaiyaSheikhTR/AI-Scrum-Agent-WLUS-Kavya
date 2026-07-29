@@ -8,7 +8,8 @@ export type AutomationServiceId =
   | 'alerting'
   | 'ticketManagement'
   | 'sentiment'
-  | 'developerEngagement';
+  | 'developerEngagement'
+  | 'velocityReport';
 
 export type AutomationJobStatus = 'idle' | 'running' | 'success' | 'error' | 'skipped';
 
@@ -85,16 +86,18 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: AutomationOrchestratorConfig = {
     dailySummary: true,
     alerting: true,
     ticketManagement: true,
-    sentiment: false,
+    sentiment: true,
     developerEngagement: true,
+    velocityReport: true,
   },
   intervalsMinutes: {
     rulesEngine: 15,
-    dailySummary: 60, // scheduler uses dailyTime; this is a health tick
+    dailySummary: 60,
     alerting: 15,
     ticketManagement: 60,
-    sentiment: 30,
-    developerEngagement: 60,
+    sentiment: 240, // sentiment digest ~ every 4 hours / once daily internally
+    developerEngagement: 180, // developer reminders ~ every 3 hours (cooldown still applies)
+    velocityReport: 60, // checks dailyTime window each hour
   },
 };
 
@@ -119,11 +122,15 @@ export const SERVICE_META: Record<
     description: 'Auto status transitions and contextual comment prompts',
   },
   sentiment: {
-    label: 'Sentiment Monitoring',
-    description: 'Background sentiment cache refresh for the active sprint',
+    label: 'Sentiment Analysis Digest',
+    description: 'Analyzes team comment sentiment and emails managers a digest/alert',
   },
   developerEngagement: {
-    label: 'Developer Engagement',
-    description: 'Tracks inactive items and prompts assignees for updates',
+    label: 'Developer Task Reminders',
+    description: 'Reminds developers about incomplete / stale tasks to complete',
+  },
+  velocityReport: {
+    label: 'Manager Velocity Report',
+    description: 'Sends velocity, burndown, and workload data to managers',
   },
 };
