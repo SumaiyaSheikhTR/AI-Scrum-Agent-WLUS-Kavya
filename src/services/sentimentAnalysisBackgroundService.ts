@@ -16,46 +16,47 @@ interface SentimentAnalysisCache {
 class SentimentAnalysisBackgroundService {
   private cache: SentimentAnalysisCache = {};
   private isRunning = false;
-  private updateInterval: NodeJS.Timeout | null = null;
+  private orchestratedMode = false;
+  private updateInterval: ReturnType<typeof setInterval> | null = null;
   private readonly CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
-  private readonly UPDATE_INTERVAL = 15 * 60 * 1000; // 15 minutes (increased from 5 to prevent flickering)
+  private readonly UPDATE_INTERVAL = 30 * 60 * 1000; // 30 minutes
   private readonly STORAGE_KEY = 'sentiment_analysis_cache';
 
   constructor() {
     this.loadCacheFromStorage();
-    // Removed automatic background updates to prevent page refreshing
-    // this.startBackgroundUpdates();
+  }
+
+  public setOrchestratedMode(enabled: boolean): void {
+    this.orchestratedMode = enabled;
+    if (enabled) {
+      this.stopBackgroundUpdates();
+    }
   }
 
   /**
-   * Start background sentiment analysis updates
+   * Start background sentiment analysis updates (standalone mode).
+   * Prefer AutomationOrchestrator which calls updateSentimentData() on a schedule.
    */
   public startBackgroundUpdates(): void {
-    // Disabled to prevent automatic page refreshing
-    console.log('Background updates are disabled to prevent page refreshing');
-    return;
-    
-    /* Original code commented out:
+    if (this.orchestratedMode) {
+      this.isRunning = true;
+      console.log('[Sentiment] running under AutomationOrchestrator');
+      return;
+    }
+
     if (this.isRunning) return;
 
     console.log('Starting sentiment analysis background service...');
     this.isRunning = true;
 
-    // Initial update (only if page is visible)
     if (typeof document === 'undefined' || !document.hidden) {
-      this.updateSentimentData();
+      void this.updateSentimentData();
     }
 
-    // Set up periodic updates with visibility check
     this.updateInterval = setInterval(() => {
-      // Only update if page is visible to prevent unnecessary background processing
-      if (typeof document === 'undefined' || !document.hidden) {
-        this.updateSentimentData();
-      } else {
-        console.log('Page not visible, skipping sentiment analysis background update');
-      }
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.updateSentimentData();
     }, this.UPDATE_INTERVAL);
-    */
   }
 
   /**
@@ -168,47 +169,53 @@ class SentimentAnalysisBackgroundService {
   }
 
   /**
-   * Update sentiment data for all current sprints
+   * Update sentiment data for current/recent sprints.
+   * Called by AutomationOrchestrator or standalone timer.
    */
-  private async updateSentimentData(): Promise<void> {
-    if (!this.isRunning) return;
-
+  public async updateSentimentData(): Promise<void> {
     try {
-      console.log('Background update: Fetching sentiment data for current sprints...');
-      
-      // Get current and recent sprints
+      console.log('[Sentiment] Fetching sentiment data for current sprints...');
+
       const sprints = await adoService.getSprints();
       const currentAndRecentSprints = sprints
-        .filter(sprint => 
-          sprint.state === 'current' || 
-          sprint.state === 'future' ||
-          (sprint.state === 'past' && 
-           new Date(sprint.endDate) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) // Last 7 days
+        .filter(
+          (sprint) =>
+            sprint.state === 'current' ||
+            sprint.state === 'future' ||
+            (sprint.state === 'past' &&
+              new Date(sprint.endDate) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
         )
-        .slice(0, 5); // Limit to 5 sprints to avoid overload
+        .slice(0, 3); // keep load modest
 
-      console.log(`Updating sentiment data for ${currentAndRecentSprints.length} sprints`);
+      console.log(`[Sentiment] Updating ${currentAndRecentSprints.length} sprint(s)`);
 
-      // Update sentiment data for each sprint in parallel (with limited concurrency)
-      const promises = currentAndRecentSprints.map(async (sprint, index) => {
-        // Add small delay to avoid overwhelming the service
-        await new Promise(resolve => setTimeout(resolve, index * 1000));
-        
+      for (let index = 0; index < currentAndRecentSprints.length; index++) {
+        const sprint = currentAndRecentSprints[index];
+        if (index > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
         try {
           const data = await this.fetchSentimentData(sprint.id, sprint.name);
           if (data) {
             this.setCachedData(sprint.id, data, sprint.name);
           }
         } catch (error) {
-          console.error(`Failed to update sentiment data for sprint ${sprint.name}:`, error);
+          console.error(`[Sentiment] Failed for sprint ${sprint.name}:`, error);
         }
-      });
+      }
 
-      await Promise.all(promises);
-      console.log('Background update: Sentiment data update completed');
-      
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('automation:status', {
+            detail: { source: 'sentiment', updatedAt: new Date().toISOString() },
+          })
+        );
+      }
+
+      console.log('[Sentiment] Update completed');
     } catch (error) {
-      console.error('Background update: Error updating sentiment data:', error);
+      console.error('[Sentiment] Error updating sentiment data:', error);
+      throw error;
     }
   }
 

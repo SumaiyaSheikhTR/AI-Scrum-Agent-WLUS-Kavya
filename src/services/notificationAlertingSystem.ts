@@ -1,6 +1,7 @@
 import adoService from './adoService';
 import teamsNotificationService from './teamsNotificationService';
 import sentimentAnalysisBackgroundService from './sentimentAnalysisBackgroundService';
+import emailService from './emailService';
 
 export interface Alert {
   id: string;
@@ -90,7 +91,8 @@ class NotificationAlertingSystem {
   private alertRules: AlertRule[] = [];
   private alerts: Alert[] = [];
   private isRunning = false;
-  private checkTimer: NodeJS.Timeout | null = null;
+  private orchestratedMode = false;
+  private checkTimer: ReturnType<typeof setInterval> | null = null;
   private alertThrottle: Map<string, Date> = new Map();
   private readonly STORAGE_KEY = 'alerting_system_config';
   private readonly RULES_STORAGE_KEY = 'alerting_rules';
@@ -103,23 +105,32 @@ class NotificationAlertingSystem {
     this.initializeDefaultRules();
   }
 
+  public setOrchestratedMode(enabled: boolean): void {
+    this.orchestratedMode = enabled;
+    if (enabled && this.checkTimer) {
+      clearInterval(this.checkTimer);
+      this.checkTimer = null;
+    }
+  }
+
   /**
    * Start the alerting system
    */
   public start(): void {
     if (this.isRunning || !this.config.enabled) return;
 
-    console.log('Notification & Alerting System startup DISABLED to prevent page refreshing');
-    
-    /* Original alerting system startup commented out:
     console.log('Starting Notification & Alerting System...');
     this.isRunning = true;
-    this.checkForAlerts();
 
+    if (this.orchestratedMode) {
+      return;
+    }
+
+    void this.checkForAlerts();
     this.checkTimer = setInterval(() => {
-      this.checkForAlerts();
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.checkForAlerts();
     }, this.config.checkInterval * 60 * 1000);
-    */
   }
 
   /**
@@ -133,6 +144,16 @@ class NotificationAlertingSystem {
       clearInterval(this.checkTimer);
       this.checkTimer = null;
     }
+  }
+
+  /**
+   * Public entry point used by AutomationOrchestrator.
+   * @returns number of newly created alerts
+   */
+  public async checkForAlertsNow(): Promise<number> {
+    const before = this.alerts.length;
+    await this.checkForAlerts();
+    return Math.max(0, this.alerts.length - before);
   }
 
   /**
@@ -365,14 +386,24 @@ class NotificationAlertingSystem {
   private async checkForAlerts(): Promise<void> {
     if (!this.config.enabled) return;
 
+    // Enforce max alerts per hour
+    const hourAgo = Date.now() - 60 * 60 * 1000;
+    const recentCount = this.alerts.filter(
+      (a) => new Date(a.createdAt).getTime() >= hourAgo
+    ).length;
+    if (recentCount >= this.config.maxAlertsPerHour) {
+      console.log(
+        `[Alerting] maxAlertsPerHour (${this.config.maxAlertsPerHour}) reached; skipping cycle`
+      );
+      return;
+    }
+
     console.log('Checking for alerts...');
 
     try {
-      // Clean up old alerts first
       await this.cleanupStaleAlerts();
 
-      // Check each enabled rule
-      for (const rule of this.alertRules.filter(r => r.enabled)) {
+      for (const rule of this.alertRules.filter((r) => r.enabled)) {
         try {
           await this.checkAlertRule(rule);
         } catch (error) {
@@ -667,11 +698,25 @@ class NotificationAlertingSystem {
   }
 
   /**
-   * Send email notification (placeholder)
+   * Send email notification via shared email service
    */
   private async sendEmailNotification(alert: Alert): Promise<void> {
-    // This would integrate with an email service
-    console.log(`Email notification for alert ${alert.id} - not yet implemented`);
+    const recipients =
+      this.alertRules.find((r) => r.type === alert.type)?.recipients ||
+      emailService.getScheduleConfig().recipients ||
+      [];
+
+    if (!recipients.length) {
+      console.warn(`[Alerting] Email channel requested for ${alert.id} but no recipients configured`);
+      return;
+    }
+
+    await emailService.sendGenericEmail({
+      to: recipients,
+      subject: `[${alert.severity.toUpperCase()}] ${alert.title}`,
+      html: `<h2>${alert.title}</h2><p>${alert.message}</p><p><em>Alert ID: ${alert.id}</em></p>`,
+      text: `${alert.title}\n\n${alert.message}\n\nAlert ID: ${alert.id}`,
+    });
   }
 
   /**

@@ -2,6 +2,7 @@ import adoService, { WorkItem, Sprint, WorkItemComment } from './adoService';
 import improvedOpenAiService from './improvedOpenAiService';
 import sentimentAnalysisBackgroundService from './sentimentAnalysisBackgroundService';
 import teamsNotificationService from './teamsNotificationService';
+import emailService from './emailService';
 
 export interface DailySummary {
   id: string;
@@ -59,14 +60,24 @@ export interface SchedulerConfig {
 class DailySummaryScheduler {
   private config: SchedulerConfig;
   private isRunning = false;
-  private schedulerTimer: NodeJS.Timeout | null = null;
+  private orchestratedMode = false;
+  private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly STORAGE_KEY = 'daily_summary_config';
   private readonly SUMMARIES_STORAGE_KEY = 'daily_summaries';
+  private readonly LAST_DELIVERY_KEY = 'daily_summary_last_delivery';
   private summaries: DailySummary[] = [];
 
   constructor() {
     this.config = this.loadConfig();
     this.loadSummaries();
+  }
+
+  public setOrchestratedMode(enabled: boolean): void {
+    this.orchestratedMode = enabled;
+    if (enabled && this.schedulerTimer) {
+      clearTimeout(this.schedulerTimer);
+      this.schedulerTimer = null;
+    }
   }
 
   /**
@@ -77,7 +88,9 @@ class DailySummaryScheduler {
 
     console.log('Starting Daily Summary Scheduler...');
     this.isRunning = true;
-    this.scheduleNextExecution();
+    if (!this.orchestratedMode) {
+      this.scheduleNextExecution();
+    }
   }
 
   /**
@@ -90,6 +103,45 @@ class DailySummaryScheduler {
     if (this.schedulerTimer) {
       clearTimeout(this.schedulerTimer);
       this.schedulerTimer = null;
+    }
+  }
+
+  /**
+   * True when current local time matches the configured daily window
+   * and we have not already delivered today.
+   */
+  public isDueNow(): boolean {
+    if (!this.config.enabled) return false;
+
+    const now = new Date();
+    if (!this.config.includeWeekends && (now.getDay() === 0 || now.getDay() === 6)) {
+      return false;
+    }
+
+    const [hours, minutes] = this.config.dailyTime.split(':').map(Number);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const targetMinutes = hours * 60 + minutes;
+    // Due within a 45-minute window after the scheduled time
+    if (currentMinutes < targetMinutes || currentMinutes > targetMinutes + 45) {
+      return false;
+    }
+
+    const today = now.toISOString().split('T')[0];
+    try {
+      const last = localStorage.getItem(this.LAST_DELIVERY_KEY);
+      if (last === today) return false;
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }
+
+  public async deliverSummaryPublic(summary: DailySummary): Promise<void> {
+    await this.deliverSummary(summary);
+    try {
+      localStorage.setItem(this.LAST_DELIVERY_KEY, summary.date);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -119,11 +171,9 @@ class DailySummaryScheduler {
    */
   public async generateSummaryNow(sprintId?: string): Promise<DailySummary> {
     console.log('Generating daily summary manually...');
-    
-    const currentSprint = sprintId 
-      ? await adoService.getCurrentSprint() 
-      : await this.findTargetSprint(sprintId);
-    
+
+    const currentSprint = await this.findTargetSprint(sprintId);
+
     if (!currentSprint) {
       throw new Error('No active sprint found');
     }
@@ -150,25 +200,25 @@ class DailySummaryScheduler {
   }
 
   /**
-   * Schedule next execution
+   * Schedule next execution (standalone mode only — orchestrator owns timing otherwise)
    */
   private scheduleNextExecution(): void {
-    if (!this.config.enabled || !this.isRunning) return;
+    if (!this.config.enabled || !this.isRunning || this.orchestratedMode) return;
 
     const now = new Date();
     const nextExecution = this.calculateNextExecution(now);
-    const timeUntilExecution = nextExecution.getTime() - now.getTime();
+    const timeUntilExecution = Math.max(5_000, nextExecution.getTime() - now.getTime());
 
-    console.log('Daily summary scheduler DISABLED to prevent page refreshing');
-    
-    /* Original daily summary scheduler commented out:
     console.log(`Next daily summary scheduled for: ${nextExecution.toLocaleString()}`);
 
     this.schedulerTimer = setTimeout(async () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.scheduleNextExecution();
+        return;
+      }
       await this.executeScheduledSummary();
-      this.scheduleNextExecution(); // Schedule next one
+      this.scheduleNextExecution();
     }, timeUntilExecution);
-    */
   }
 
   /**
@@ -616,11 +666,49 @@ Format your response as JSON with keys: summary, highlights, concerns, recommend
   }
 
   /**
-   * Deliver to Email (placeholder - would need email service)
+   * Deliver to Email via shared email service / backend API
    */
   private async deliverToEmail(summary: DailySummary): Promise<void> {
-    // This would integrate with an email service
-    console.log('Email delivery not yet implemented');
+    const recipients = this.config.recipients?.length
+      ? this.config.recipients
+      : emailService.getScheduleConfig().recipients;
+
+    if (!recipients || recipients.length === 0) {
+      console.warn('[DailySummary] Email channel enabled but no recipients configured');
+      return;
+    }
+
+    const subject = `Daily Sprint Summary — ${summary.sprintName} (${summary.date})`;
+    const html = `
+      <h2>Daily Sprint Summary — ${summary.sprintName}</h2>
+      <p><strong>Date:</strong> ${summary.date}</p>
+      <p>${summary.summary}</p>
+      <h3>Highlights</h3>
+      <ul>${summary.highlights.map((h) => `<li>${h}</li>`).join('')}</ul>
+      <h3>Concerns</h3>
+      <ul>${summary.concerns.map((c) => `<li>${c}</li>`).join('')}</ul>
+      <h3>Recommendations</h3>
+      <ul>${summary.recommendations.map((r) => `<li>${r}</li>`).join('')}</ul>
+      <h3>Metrics</h3>
+      <ul>
+        <li>Completed today: ${summary.metrics.completedToday}</li>
+        <li>In progress: ${summary.metrics.inProgress}</li>
+        <li>Blocked: ${summary.metrics.blocked}</li>
+        <li>Days remaining: ${summary.metrics.daysRemaining}</li>
+        <li>Burndown: ${summary.metrics.burndownProgress.toFixed(1)}%</li>
+      </ul>
+    `;
+
+    const ok = await emailService.sendGenericEmail({
+      to: recipients,
+      subject,
+      html,
+      text: this.formatSummaryForTeams(summary),
+    });
+
+    if (!ok) {
+      console.warn('[DailySummary] Email delivery failed or was skipped');
+    }
   }
 
   /**
