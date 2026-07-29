@@ -99,19 +99,7 @@ const ThomsonReutersOpenAiConfigForm: React.FC = () => {
       // Save current config first
       thomsonReutersOpenAIService.updateConfig(config);
       
-      // Check if we're in development mode
-      const isDevelopmentMode = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      
-      if (isDevelopmentMode) {
-        setConnectionStatus('connected');
-        setMessage({
-          type: 'warning',
-          text: '🔧 Development Mode: Connection test successful using mock Thomson Reuters OpenAI service. In production, this would connect to the actual Thomson Reuters AI platform.'
-        });
-        return;
-      }
-      
-      // Test the connection
+      // Always test the real Thomson Reuters OpenAI connection
       const isConnected = await thomsonReutersOpenAIService.testConnection();
       
       if (isConnected) {
@@ -170,16 +158,8 @@ const ThomsonReutersOpenAiConfigForm: React.FC = () => {
           <Typography variant="h6" component="h2" gutterBottom>
             Thomson Reuters OpenAI Configuration
           </Typography>
-          {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              <Typography variant="body2">
-                🔧 <strong>Development Mode:</strong> Running on localhost. The service will use mock responses for AI recommendations. 
-                CORS errors are expected and will be handled gracefully.
-              </Typography>
-            </Alert>
-          )}
           <Typography variant="body2" color="text.secondary" paragraph>
-            Configure Thomson Reuters Azure OpenAI integration for intelligent capacity utilization recommendations.
+            Configure Thomson Reuters Azure OpenAI for real AI recommendations. Localhost uses the TR OpenAI backend proxy (port 3002).
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
             <Typography variant="body2">

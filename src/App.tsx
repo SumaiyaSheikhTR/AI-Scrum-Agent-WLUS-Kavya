@@ -15,7 +15,6 @@ import TeamPage from './pages/Team';
 import AiAssistantPage from './pages/AiAssistant';
 import GitPRPage from './pages/GitPR';
 import SentimentAnalysisPage from './pages/SentimentAnalysis';
-import SentimentAnalysisDemoPage from './pages/SentimentAnalysisDemo';
 import CommentDebugPanel from './components/debug/CommentDebugPanel';
 import automationOrchestrator from './services/automationOrchestrator';
 
@@ -144,7 +143,6 @@ function App() {
               <Route path="analytics" element={<AnalyticsPage />} />
               <Route path="team" element={<TeamPage />} />
               <Route path="sentiment-analysis" element={<SentimentAnalysisPage />} />
-              <Route path="sentiment-demo" element={<SentimentAnalysisDemoPage />} />
               <Route path="git-pr" element={<GitPRPage />} />
               <Route path="ai-assistant" element={<AiAssistantPage />} />
               <Route path="debug-comments" element={<CommentDebugPanel />} />

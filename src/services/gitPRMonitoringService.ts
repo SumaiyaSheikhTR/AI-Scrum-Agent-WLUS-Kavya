@@ -73,15 +73,10 @@ class GitPRMonitoringService {
       console.log('Fetching current sprint...');
       const currentSprint = await adoService.getCurrentSprint();
       if (!currentSprint) {
-        console.warn('No current sprint found. This could be due to:');
-        console.warn('1. No active sprint configured for the team');
-        console.warn('2. Invalid ADO configuration');
-        console.warn('3. Team settings not properly configured');
-        console.log('📝 Using mock data for demonstration purposes');
-        const mockData = this.getMockWorkItemsWithPRs();
-        this.cachedWorkItemsWithPRs = mockData;
+        console.warn('No current sprint found — returning empty real-time result');
+        this.cachedWorkItemsWithPRs = [];
         this.lastFetchTimestamp = new Date();
-        return mockData;
+        return [];
       }
       
       console.log(`Found current sprint: ${currentSprint.name} (ID: ${currentSprint.id})`);
@@ -92,15 +87,10 @@ class GitPRMonitoringService {
       console.log(`Found ${sprintWorkItems.length} work items in current sprint`);
       
       if (sprintWorkItems.length === 0) {
-        console.warn('No work items found in current sprint. This could be due to:');
-        console.warn('1. Current sprint has no work items assigned');
-        console.warn('2. CORS policy blocking direct API calls to Azure DevOps');
-        console.warn('3. Invalid ADO configuration');
-        console.log('📝 Using mock data for demonstration purposes');
-        const mockData = this.getMockWorkItemsWithPRs();
-        this.cachedWorkItemsWithPRs = mockData;
+        console.warn('No work items found in current sprint — returning empty real-time result');
+        this.cachedWorkItemsWithPRs = [];
         this.lastFetchTimestamp = new Date();
-        return mockData;
+        return [];
       }
       
       const workItemsWithPRs: WorkItemWithPR[] = [];
@@ -146,39 +136,11 @@ class GitPRMonitoringService {
       this.lastFetchTimestamp = new Date();
 
       console.log(`Found ${workItemsWithPRs.length} work items with PRs in current sprint`);
-      
-      // If no work items with PRs found, show mock data for demonstration
-      if (workItemsWithPRs.length === 0) {
-        console.log('📝 Using mock data for demonstration (no PRs found in current sprint work items)');
-        const mockData = this.getMockWorkItemsWithPRs();
-        this.cachedWorkItemsWithPRs = mockData;
-        this.lastFetchTimestamp = new Date();
-        return mockData;
-      }
-      
       return workItemsWithPRs;
     } catch (error) {
       console.error('Error fetching work items with PRs:', error);
-      
-      if (error instanceof Error && error.message.includes('Network Error')) {
-        console.error('⚠️  CORS Issue Detected:');
-        console.error('Direct API calls to Azure DevOps are blocked by browser security policy.');
-        console.error('Solutions:');
-        console.error('1. Use Azure DevOps Extensions API (if running as extension)');
-        console.error('2. Implement a backend proxy server');
-        console.error('3. Use Azure DevOps REST API from server-side');
-        
-        // Fallback to mock data if no cached data available
-        if (this.cachedWorkItemsWithPRs.length === 0) {
-          console.log('📝 Using mock data for demonstration (CORS blocking API calls)');
-          const mockData = this.getMockWorkItemsWithPRs();
-          this.cachedWorkItemsWithPRs = mockData;
-          this.lastFetchTimestamp = new Date();
-          return mockData;
-        }
-      }
-      
-      return this.cachedWorkItemsWithPRs; // Return cached data if available
+      // Prefer empty over fabricated data so the UI reflects real ADO state
+      return this.cachedWorkItemsWithPRs.length > 0 ? this.cachedWorkItemsWithPRs : [];
     }
   }
 
@@ -649,117 +611,6 @@ class GitPRMonitoringService {
     }
   }
 
-  /**
-   * Get mock data for development when real data is not available
-   */
-  private getMockWorkItemsWithPRs(): WorkItemWithPR[] {
-    return [
-      {
-        workItem: {
-          id: 2162601,
-          title: "WL US - Research Skills: Negative Treatment - Website: add Summary to the Delivery methods",
-          type: "User Story",
-          state: "Active",
-          assignedTo: "Sreedhar, Kavya (TR Technology)",
-          updatedDate: new Date().toISOString()
-        },
-        pullRequests: [
-          {
-            id: 1128,
-            title: "feat(NegativeTreatment): Add NT Summary...",
-            description: "Implements the functionality described in work item #2162601. Adds summary feature to delivery methods for negative treatment.",
-            status: "completed",
-            sourceRefName: "refs/heads/feature/negative-treatment-summary",
-            targetRefName: "refs/heads/main",
-            author: "GitHub User",
-            reviewers: [
-              {
-                displayName: "Code Reviewer",
-                email: "reviewer@company.com",
-                vote: 10, // Approved
-                isRequired: true
-              }
-            ],
-            createdDate: new Date(Date.now() - 172800000).toISOString(), // 2 days ago
-            updatedDate: new Date(Date.now() - 86400000).toISOString(),   // 1 day ago
-            completedDate: new Date(Date.now() - 86400000).toISOString(),
-            url: "https://github.com/organization/repo/pull/1128",
-            repositoryName: "research-skills-app",
-            repositoryUrl: "https://github.com/organization/research-skills-app"
-          },
-          {
-            id: 1105,
-            title: "feat(NegativeTreatment): Add NT Summary...",
-            description: "Additional implementation for work item #2162601",
-            status: "completed",
-            sourceRefName: "refs/heads/feature/nt-summary-additional",
-            targetRefName: "refs/heads/main",
-            author: "GitHub User",
-            reviewers: [
-              {
-                displayName: "Code Reviewer",
-                email: "reviewer@company.com",
-                vote: 10, // Approved
-                isRequired: true
-              }
-            ],
-            createdDate: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
-            updatedDate: new Date(Date.now() - 172800000).toISOString(),  // 2 days ago
-            completedDate: new Date(Date.now() - 172800000).toISOString(),
-            url: "https://github.com/organization/repo/pull/1105",
-            repositoryName: "research-skills-app",
-            repositoryUrl: "https://github.com/organization/research-skills-app"
-          },
-          {
-            id: 18930,
-            title: "feat(Platform): Add NT Summary to Deliver...",
-            description: "Platform changes for work item #2162601",
-            status: "completed",
-            sourceRefName: "refs/heads/feature/platform-nt-summary",
-            targetRefName: "refs/heads/main",
-            author: "GitHub User",
-            reviewers: [
-              {
-                displayName: "Platform Reviewer",
-                email: "platform.reviewer@company.com",
-                vote: 10, // Approved
-                isRequired: true
-              }
-            ],
-            createdDate: new Date(Date.now() - 345600000).toISOString(), // 4 days ago
-            updatedDate: new Date(Date.now() - 259200000).toISOString(),  // 3 days ago
-            completedDate: new Date(Date.now() - 259200000).toISOString(),
-            url: "https://github.com/organization/platform/pull/18930",
-            repositoryName: "platform-repo",
-            repositoryUrl: "https://github.com/organization/platform-repo"
-          },
-          {
-            id: 31215,
-            title: "feat(NegativeTreatment): Add NT Summary...",
-            description: "Final implementation for work item #2162601",
-            status: "completed",
-            sourceRefName: "refs/heads/feature/nt-summary-final",
-            targetRefName: "refs/heads/main",
-            author: "GitHub User",
-            reviewers: [
-              {
-                displayName: "Senior Reviewer",
-                email: "senior.reviewer@company.com",
-                vote: 10, // Approved
-                isRequired: true
-              }
-            ],
-            createdDate: new Date(Date.now() - 432000000).toISOString(), // 5 days ago
-            updatedDate: new Date(Date.now() - 345600000).toISOString(),  // 4 days ago
-            completedDate: new Date(Date.now() - 345600000).toISOString(),
-            url: "https://github.com/organization/repo/pull/31215",
-            repositoryName: "research-skills-app",
-            repositoryUrl: "https://github.com/organization/research-skills-app"
-          }
-        ]
-      }
-    ];
-  }
 }
 
 // Export singleton instance

@@ -131,28 +131,6 @@ class OpenAIService {
         baseUrl: this.baseUrl
       });
       
-      // Check if we're using mock data for development/testing
-      if (process.env.REACT_APP_USE_MOCK_AI === 'true') {
-        console.log('Using mock AI response');
-        
-        // Add user message to the conversation history
-        this.messages.push({
-          role: 'user',
-          content: userMessage
-        });
-        
-        // Generate a mock response
-        const mockResponse = `This is a mock response to: "${userMessage}". In a production environment, this would be a real response from OpenAI.`;
-        
-        // Add mock assistant message to the conversation history
-        this.messages.push({
-          role: 'assistant',
-          content: mockResponse
-        });
-        
-        return mockResponse;
-      }
-      
       // Get credentials for the API call
       const credentials = await this.getCredentials();
       
@@ -219,21 +197,9 @@ class OpenAIService {
         });
       }
       
-      // Add a fallback response for development/testing
-      if (process.env.REACT_APP_USE_MOCK_AI === 'true') {
-        console.log('Using fallback mock response due to error');
-        const fallbackResponse = `I'm sorry, there was an error processing your request. Since we're in development mode, here's a mock response to: "${userMessage}".`;
-        
-        // Add fallback assistant message to the conversation history
-        this.messages.push({
-          role: 'assistant',
-          content: fallbackResponse
-        });
-        
-        return fallbackResponse;
-      }
-      
-      return 'Sorry, I encountered an error while processing your request. Please try again later.';
+      throw error instanceof Error
+        ? error
+        : new Error('Failed to get a real AI response. Please verify OpenAI configuration.');
     }
   }
 

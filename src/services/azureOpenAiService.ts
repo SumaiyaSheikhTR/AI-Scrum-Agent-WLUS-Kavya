@@ -177,100 +177,6 @@ class AzureOpenAIService {
       // Reload configuration in case it was updated
       this.loadConfig();
       
-      // Check if we're using mock data for development/testing
-      if (process.env.REACT_APP_USE_MOCK_AI === 'true') {
-        console.log('Using mock AI response for development');
-        
-        // Add user message to the conversation history
-        this.messages.push({
-          role: 'user',
-          content: userMessage
-        });
-        
-        // Generate a context-aware mock response
-        let mockResponse = '';
-        const lowerMessage = userMessage.toLowerCase();
-        
-        if (lowerMessage.includes('sprint') && (lowerMessage.includes('summary') || lowerMessage.includes('current'))) {
-          mockResponse = `📊 **Current Sprint Summary** (Mock Data)
-
-**Sprint Overview:**
-• Sprint 24.3 - "Research Skills Enhancement"
-• Duration: Dec 16, 2024 - Jan 6, 2025 (3 weeks)
-• Team: Research Skills Development Team
-
-**Work Items Progress:**
-• **Total Items:** 12 work items
-• **Completed:** 8 work items (67%)
-• **In Progress:** 3 work items (25%)
-• **Not Started:** 1 work item (8%)
-
-**Key Highlights:**
-• Work Item #2162601: "Negative Treatment Website Summary" - ✅ Completed
-  - 4 pull requests merged successfully
-  - GitHub repos: research-skills-app, platform-repo
-• High velocity team with consistent delivery
-• No major blockers identified
-
-**Sprint Metrics:**
-• Velocity: 34 story points
-• Burn rate: On track
-• PR review time: 1.2 days average
-
-*Note: This is mock data for development. Configure Thomson Reuters OpenAI to get real sprint analysis.*`;
-        } else if (lowerMessage.includes('work item') || lowerMessage.includes('pull request') || lowerMessage.includes('pr')) {
-          mockResponse = `🔍 **Work Items & Pull Requests** (Mock Data)
-
-**Recent Activity:**
-• Work Item #2162601 has 4 associated pull requests
-• All PRs are completed and merged
-• GitHub integration working via AB# tagging
-
-**Active PRs:**
-Currently no active pull requests requiring attention.
-
-**Completed This Sprint:**
-• feat(NegativeTreatment): Add NT Summary... (#1128, #1105, #31215)
-• feat(Platform): Add NT Summary to Delivery... (#18930)
-
-*Configure Thomson Reuters OpenAI for real-time analysis.*`;
-        } else if (lowerMessage.includes('team') || lowerMessage.includes('developer')) {
-          mockResponse = `👥 **Team Analytics** (Mock Data)
-
-**Team Members:**
-• Kavya Sreedhar (TR Technology) - Primary assignee
-• Active contributor with consistent commits
-
-**Development Velocity:**
-• Average cycle time: 3.2 days
-• Code review participation: High
-• Feature delivery rate: Excellent
-
-*Real team insights available with Thomson Reuters OpenAI.*`;
-        } else {
-          mockResponse = `🤖 **AI Scrum Assistant** (Mock Mode)
-
-I'm running in development mode with mock data. Here's what I can help you with:
-
-• **Sprint Analysis:** Ask about current sprint summary, progress, or metrics
-• **Work Item Tracking:** Get details on specific work items and their PRs
-• **Team Insights:** Developer analytics and team performance
-• **Process Improvement:** Scrum best practices and recommendations
-
-Try asking: "What's the current sprint summary?" or "Show me work item progress"
-
-*To get real AI insights, configure your Thomson Reuters OpenAI credentials in Settings.*`;
-        }
-        
-        // Add mock assistant message to the conversation history
-        this.messages.push({
-          role: 'assistant',
-          content: mockResponse
-        });
-        
-        return mockResponse;
-      }
-      
       // Validate configuration
       if (!this.validateConfig() || !this.config) {
         throw new Error('Thomson Reuters OpenAI configuration is invalid. Please check your workspace ID, asset ID, and endpoint settings.');
@@ -365,36 +271,9 @@ Try asking: "What's the current sprint summary?" or "Show me work item progress"
         }
       }
       
-      // Add a fallback response for development/testing
-      if (process.env.REACT_APP_USE_MOCK_AI === 'true') {
-        console.log('Using fallback mock response due to error');
-        const fallbackResponse = `⚠️ **Error in Development Mode**
-
-There was an issue processing your request, but since we're in mock mode, here's what I would help you with:
-
-**For "${userMessage}":**
-• Sprint analysis and metrics
-• Work item progress tracking  
-• Team performance insights
-• Pull request monitoring
-
-**To resolve:**
-1. Check browser console for detailed error logs
-2. Verify Thomson Reuters OpenAI configuration in Settings
-3. Ensure network connectivity to TR services
-
-*This is a development fallback response.*`;
-        
-        // Add fallback assistant message to the conversation history
-        this.messages.push({
-          role: 'assistant',
-          content: fallbackResponse
-        });
-        
-        return fallbackResponse;
-      }
-      
-      return 'Sorry, I encountered an error while processing your request. Please check your Thomson Reuters OpenAI configuration and try again.';
+      throw error instanceof Error
+        ? error
+        : new Error('Failed to get a real AI response. Please verify Azure OpenAI configuration.');
     }
   }
 

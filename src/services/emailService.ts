@@ -370,33 +370,12 @@ class EmailService {
     try {
       const subject = `Sprint Capacity Report: ${data.sprintName} - ${Math.round(data.overallUtilization)}% Utilization`;
       const htmlContent = this.generateEmailHTML(data);
-
-      // In a real implementation, you would use an actual email service like:
-      // - NodeMailer with SMTP
-      // - SendGrid API
-      // - AWS SES
-      // - Microsoft Graph API (for Outlook/Exchange)
-      
-      // For now, we'll simulate the email sending
-      console.log('📧 ==================== CAPACITY REPORT EMAIL ====================');
-      console.log(`📧 To: ${emailRecipients.join(', ')}`);
-      console.log(`📧 From: ${this.emailConfig.fromName} <${this.emailConfig.fromEmail}>`);
-      console.log(`📧 Subject: ${subject}`);
-      console.log(`📧 SMTP Server: ${this.emailConfig.smtpServer}:${this.emailConfig.smtpPort}`);
-      console.log(`📧 HTML Content Length: ${htmlContent.length} characters`);
-      console.log('📧 ================================================================');
-
-      // TODO: Implement actual email sending here
-      // const result = await this.sendSMTPEmail({
-      //   to: emailRecipients,
-      //   subject,
-      //   html: htmlContent
-      // });
-
-      // For demo purposes, show success
-      console.log('✅ Capacity report email sent successfully!');
-      return true;
-
+      return await this.sendGenericEmail({
+        to: emailRecipients,
+        subject,
+        html: htmlContent,
+        text: `Sprint Capacity Report: ${data.sprintName}\nOverall utilization: ${Math.round(data.overallUtilization)}%\nAssigned: ${data.totalAssigned}h / Capacity: ${data.totalCapacity}h`,
+      });
     } catch (error) {
       console.error('❌ Error sending capacity report email:', error);
       return false;

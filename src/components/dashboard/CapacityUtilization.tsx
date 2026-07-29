@@ -37,6 +37,7 @@ import adoService, { TeamCapacity, TeamMember, SprintCapacityData, Sprint, WorkI
 import TeamCapacityConfigForm from '../config/TeamCapacityConfigForm';
 import AdoCapacityDiagnostics from '../debug/AdoCapacityDiagnostics';
 import { thomsonReutersOpenAIService } from '../../services/thomsonReutersOpenAiService';
+import emailService from '../../services/emailService';
 import AIRecommendationDialog from './AIRecommendationDialog';
 import CentralizedAgenticChat from '../chat/CentralizedAgenticChat';
 
@@ -276,10 +277,10 @@ const CapacityUtilization: React.FC<CapacityUtilizationProps> = ({ sprintId: ini
         }
       }
       
-      // Fallback to hardcoded defaults if needed
-      organization = organization || 'DefaultOrg';
-      project = project || 'DefaultProject';
-      
+      if (!organization || !project) {
+        throw new Error('Azure DevOps organization/project is not configured. Configure them in Settings.');
+      }
+
       const adoBaseUrl = `https://dev.azure.com/${organization}/${project}`;
       
       // Get AI response with ADO links
@@ -611,22 +612,58 @@ const CapacityUtilization: React.FC<CapacityUtilizationProps> = ({ sprintId: ini
       alert('❌ No capacity data available to send. Please load the data first.');
       return;
     }
-    
-    // Show email sending message
-    alert('📧 Sending capacity report via email...');
-    
+
     try {
-      // Prepare sprint information
       const selectedSprint = availableSprints.find(sprint => sprint.id.toString() === selectedSprintId) || currentSprint;
       const sprintName = selectedSprint ? selectedSprint.name : 'Current Sprint';
-      console.log(`Sending email report for sprint: ${sprintName}`);
-      
-      // Email would typically be sent here
-      // This is a placeholder for the actual implementation
-      setTimeout(() => {
+      const totalCapacity = capacityData.teamCapacities.reduce(
+        (sum, cap) => sum + (cap.totalCapacityForSprint || 0),
+        0
+      );
+      const totalAssigned = utilizationData.reduce((sum, data) => sum + data.assignedEffort, 0);
+      const totalCompleted = utilizationData.reduce((sum, data) => sum + data.completedEffort, 0);
+      const overallUtilization = totalCapacity > 0 ? (totalAssigned / totalCapacity) * 100 : 0;
+
+      const teamMembers = utilizationData.map((data) => {
+        const utilization = data.utilization;
+        let status = 'On Track';
+        if (utilization > 100) status = 'Over Capacity';
+        else if (utilization < 70) status = 'Under Utilized';
+        else if (!data.burnRateAnalysis.isOnTrack) status = 'At Risk';
+
+        return {
+          name: data.member.displayName,
+          utilization,
+          capacity: data.capacity.totalCapacityForSprint || 0,
+          assigned: data.assignedEffort,
+          completed: data.completedEffort,
+          status,
+          isOnTrack: data.burnRateAnalysis.isOnTrack,
+        };
+      });
+
+      const wellUtilized = teamMembers.filter((m) => m.utilization >= 70 && m.utilization <= 100).length;
+      const underUtilized = teamMembers.filter((m) => m.utilization < 70).length;
+      const overCapacity = teamMembers.filter((m) => m.utilization > 100).length;
+      const atRisk = teamMembers.filter((m) => !m.isOnTrack).length;
+
+      const ok = await emailService.sendCapacityReport({
+        sprintName,
+        sprintId: selectedSprintId || selectedSprint?.id?.toString() || '',
+        reportDate: new Date().toISOString(),
+        totalCapacity,
+        totalAssigned,
+        totalCompleted,
+        overallUtilization,
+        teamMembers,
+        summary: { wellUtilized, underUtilized, overCapacity, atRisk },
+      });
+
+      if (ok) {
         alert('✅ Capacity report email sent successfully!');
-      }, 1000);
-      
+      } else {
+        alert('❌ Failed to send capacity report. Check Email settings and that email is enabled.');
+      }
     } catch (error) {
       console.error('Error sending email:', error);
       alert('❌ Failed to send email: ' + (error as Error).message);
@@ -694,25 +731,16 @@ const CapacityUtilization: React.FC<CapacityUtilizationProps> = ({ sprintId: ini
   });
 
   useEffect(() => {
-    // Auto-refresh DISABLED to prevent page refreshing
-    console.log('Auto-refresh disabled for CapacityUtilization to prevent page refreshing');
-    return;
-
-    /* Original auto-refresh code commented out:
-    // Auto-refresh capacity data every 10 minutes to keep it real-time
-    // But only if we're not using fallback data to avoid unnecessary API calls
     if (!selectedSprintId || isUsingFallback) return;
 
     const interval = setInterval(() => {
-      console.log('🕐 Auto-refreshing capacity data (10-minute interval)');
-      // Only refresh if the tab is visible to avoid background refreshes
       if (!document.hidden) {
+        console.log('🕐 Auto-refreshing capacity data');
         fetchCapacityDataManual(selectedSprintId, true);
       }
-    }, 10 * 60 * 1000); // 10 minutes instead of 5
+    }, 10 * 60 * 1000);
 
     return () => clearInterval(interval);
-    */
   }, [selectedSprintId, isUsingFallback, fetchCapacityDataManual]);
 
   // Listen for scheduled email report events

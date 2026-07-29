@@ -20,7 +20,6 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import PeopleIcon from '@mui/icons-material/People';
 import SentimentSatisfiedAltIcon from '@mui/icons-material/SentimentSatisfiedAlt';
-import ScienceIcon from '@mui/icons-material/Science';
 import SettingsIcon from '@mui/icons-material/Settings';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -199,17 +198,6 @@ const Layout: React.FC = () => {
                 <SentimentSatisfiedAltIcon />
               </ListItemIcon>
               <ListItemText primary="Sentiment Analysis" />
-            </ListItemButton>
-          </ListItem>
-          <ListItem disablePadding>
-            <ListItemButton
-              onClick={() => handleNavigation('/sentiment-demo')}
-              selected={location.pathname === '/sentiment-demo'}
-            >
-              <ListItemIcon>
-                <ScienceIcon />
-              </ListItemIcon>
-              <ListItemText primary="ML Sentiment Demo" />
             </ListItemButton>
           </ListItem>
           <ListItem disablePadding>

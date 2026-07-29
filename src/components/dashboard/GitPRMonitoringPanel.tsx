@@ -84,14 +84,9 @@ export const GitPRMonitoringPanel: React.FC<GitPRMonitoringPanelProps> = () => {
     }
   }, []);
 
-  // Auto-loading of Git PR monitoring data DISABLED to prevent page refreshing
-  console.log('Git PR monitoring auto-load DISABLED to prevent page refreshing');
-  
-  /* Original auto-load commented out:
   useEffect(() => {
     loadWorkItemsWithPRs();
   }, [loadWorkItemsWithPRs]);
-  */
 
   const handleForceRefresh = async () => {
     console.log('Force refreshing - clearing cache...');

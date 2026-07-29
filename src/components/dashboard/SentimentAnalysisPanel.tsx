@@ -43,7 +43,7 @@ interface SentimentAnalysisPanelProps {
 const SentimentAnalysisPanel: React.FC<SentimentAnalysisPanelProps> = ({ 
   sprintId: initialSprintId, 
   workItemId, 
-  useRealData = false,
+  useRealData = true,
   teamName: initialTeamName
 }) => {
   const [isLoading, setIsLoading] = useState(false); // Changed from true to false to prevent loading spinner
@@ -565,9 +565,9 @@ const SentimentAnalysisPanel: React.FC<SentimentAnalysisPanelProps> = ({
       
       {/* Data Source Info */}
       <Alert severity="info" sx={{ mb: 2 }}>
-        {sentimentAnalysisService.getConfig().useRealData 
-          ? "Using real data from Azure DevOps"
-          : "Using sample data (enable 'Use Real Data from ADO' in settings to use real data)"}
+        {sentimentAnalysisService.getConfig().useRealData
+          ? "Using real-time comments from Azure DevOps"
+          : "Real ADO data required — enable 'Use Real Data from ADO' in Settings"}
       </Alert>
       
       {/* View Mode Selector */}

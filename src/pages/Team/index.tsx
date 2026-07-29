@@ -129,28 +129,49 @@ const TeamPage: React.FC = () => {
         : 1;
       
       const engagementScore = Math.round((completionRatio * 0.6 + staleRatio * 0.4) * 100);
-      
-      // Use neutral sentiment scores (no longer doing real-time analysis here - moved to dedicated page)
+
+      // Real completion-time estimate from created→updated on completed items
+      const completionDurations = completedItems
+        .map((item) => {
+          const created = new Date(item.createdDate).getTime();
+          const updated = new Date(item.updatedDate).getTime();
+          if (!created || !updated || updated < created) return null;
+          return (updated - created) / (1000 * 60 * 60 * 24);
+        })
+        .filter((v): v is number => v != null);
+      const averageCompletionTime =
+        completionDurations.length > 0
+          ? Math.round(
+              (completionDurations.reduce((a, b) => a + b, 0) / completionDurations.length) * 10
+            ) / 10
+          : 0;
+
+      const lastActiveMs = Math.max(
+        ...assignedItems.map((item) => new Date(item.updatedDate).getTime()).filter(Boolean),
+        0
+      );
+
+      // Sentiment is owned by the Sentiment Analysis page/service (real ADO comments)
       const sentimentScores = {
-        positive: 0.0, 
+        positive: 0.0,
         neutral: 0.0,
         negative: 0.0,
         frustrated: 0.0,
-        averageScore: 0.0
+        averageScore: 0.0,
       };
-      
+
       activities.push({
         developerId: assignee,
-        developerName: assignee.split('<')[0].trim(), // Extract name from "Name <email>" format
-        lastActive: new Date().toISOString(),
+        developerName: assignee.split('<')[0].trim(),
+        lastActive: lastActiveMs ? new Date(lastActiveMs).toISOString() : new Date().toISOString(),
         workItemsAssigned: assignedItems.length,
         workItemsCompleted: completedItems.length,
-        averageCompletionTime: 3, // Placeholder value
-        commentCount: 0, // No longer analyzing comments here - moved to Sentiment Analysis page
-        averageResponseTime: Math.floor(Math.random() * 24), // Random placeholder in hours
+        averageCompletionTime,
+        commentCount: 0,
+        averageResponseTime: 0,
         sentimentScores,
         staleItemCount: staleItems.length,
-        engagementScore
+        engagementScore,
       });
     }
     
