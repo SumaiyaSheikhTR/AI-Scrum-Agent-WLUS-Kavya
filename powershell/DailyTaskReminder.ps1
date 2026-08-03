@@ -377,13 +377,13 @@ function Show-TaskReminder {
     Set-TodayTasks $tasks
 
     $remaining = @($tasks | Where-Object Status -ne 'Completed').Count
-    $result = [System.Windows.Forms.MessageBox]::Show(
+    $style = [Microsoft.VisualBasic.MsgBoxStyle]::YesNoCancel -bor
+        [Microsoft.VisualBasic.MsgBoxStyle]::Information -bor
+        [Microsoft.VisualBasic.MsgBoxStyle]::SystemModal
+    $result = [Microsoft.VisualBasic.Interaction]::MsgBox(
         "$($Task.Title)`n`nTime: $($Task.ScheduleTime)   Priority: $($Task.Priority)`nSource: $($Task.Source)$(if ($Task.AdoWorkItemId) { " #$($Task.AdoWorkItemId)" })`n`n$remaining task(s) remain today.`n`nYes = Mark done`nNo = In progress`nCancel = Snooze 10 minutes",
-        'Daily Task Reminder',
-        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
-        [System.Windows.Forms.MessageBoxIcon]::Information,
-        [System.Windows.Forms.MessageBoxDefaultButton]::Button1,
-        [System.Windows.Forms.MessageBoxOptions]::ServiceNotification
+        $style,
+        'Daily Task Reminder'
     )
 
     try {
