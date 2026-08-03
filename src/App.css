@@ -1,0 +1,258 @@
+:root {
+  --ink: #14201b;
+  --muted: #5d6b64;
+  --paper: #f3efe6;
+  --panel: rgba(255, 252, 246, 0.88);
+  --accent: #0f6b4c;
+  --accent-deep: #0a4633;
+  --warn: #9a3412;
+  --line: rgba(20, 32, 27, 0.12);
+  --shadow: 0 24px 60px rgba(20, 32, 27, 0.12);
+  font-family: "Fraunces", "Iowan Old Style", "Palatino Linotype", serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.45;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(15, 107, 76, 0.18), transparent 34%),
+    linear-gradient(160deg, #efe7d7 0%, #f7f3ea 42%, #e4eee8 100%);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.shell {
+  width: min(960px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2.5rem 0 4rem;
+}
+
+.panel,
+.workspace {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  padding: 2rem;
+}
+
+.hero-panel {
+  min-height: calc(100vh - 5rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.brand {
+  margin: 0;
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  color: var(--accent-deep);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0.35rem 0 0.75rem;
+  font-weight: 560;
+  letter-spacing: -0.03em;
+}
+
+h1 {
+  font-size: clamp(2.4rem, 6vw, 4.4rem);
+  max-width: 11ch;
+  line-height: 0.95;
+}
+
+.lede,
+.muted,
+.eyebrow {
+  color: var(--muted);
+}
+
+.lede {
+  max-width: 46ch;
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0;
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.stack,
+label {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.stack {
+  gap: 1rem;
+  max-width: 420px;
+}
+
+label {
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: 0.92rem;
+}
+
+input,
+select,
+button {
+  border-radius: 0;
+  border: 1px solid var(--line);
+  padding: 0.85rem 0.95rem;
+  background: #fffdf8;
+  color: var(--ink);
+}
+
+button {
+  background: var(--accent);
+  color: #f7fff9;
+  border-color: var(--accent);
+  cursor: pointer;
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  font-weight: 600;
+}
+
+button:hover {
+  background: var(--accent-deep);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+button.danger {
+  color: var(--warn);
+}
+
+.actions,
+.row,
+.topbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.topbar {
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.ado-list ul,
+.queue {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.ado-list li,
+.queue li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.queue li.done strong,
+.queue li.done p {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+.manual-list .row {
+  margin-bottom: 0.75rem;
+}
+
+.manual-list .row input:first-child {
+  flex: 1 1 220px;
+}
+
+.error,
+.success {
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  padding: 0.8rem 0.9rem;
+  margin: 0.75rem 0;
+}
+
+.error {
+  background: #fff1eb;
+  color: var(--warn);
+}
+
+.success {
+  background: #e8f6ef;
+  color: var(--accent-deep);
+}
+
+.reminder-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 32, 27, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 20;
+}
+
+.reminder-card {
+  width: min(480px, 100%);
+  background: #fffdf8;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    width: min(100% - 1rem, 960px);
+    padding-top: 1rem;
+  }
+
+  .panel,
+  .workspace {
+    padding: 1.25rem;
+  }
+
+  .queue li,
+  .ado-list li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
