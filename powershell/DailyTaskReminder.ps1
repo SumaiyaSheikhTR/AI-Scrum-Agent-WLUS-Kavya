@@ -1,12 +1,22 @@
 [CmdletBinding()]
 param(
-    [switch]$RunOnce
+    [switch]$RunOnce,
+    [switch]$TestConnection
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName Microsoft.VisualBasic
+
+# Windows PowerShell 5.1 defaults to TLS 1.0/1.1, which dev.azure.com rejects.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+catch {
+    # Ignore: newer hosts already negotiate TLS 1.2+.
+}
 
 $AppName = 'DailyTaskReminder'
 $AppDataDir = Join-Path $env:LOCALAPPDATA $AppName
@@ -99,17 +109,29 @@ function Invoke-AdoRequest {
 function Get-AdoCurrentUser {
     $config = Get-Config
     $data = Invoke-AdoRequest -Path "$($config.Organization)/_apis/connectionData?connectOptions=1&lastChangeId=-1&lastChangeId64=-1"
-    if (-not $data.authenticatedUser.id) {
-        throw 'Azure DevOps did not return an authenticated user for this PAT.'
+    $authenticatedUser = $data.PSObject.Properties['authenticatedUser'].Value
+    if (-not $authenticatedUser -or -not $authenticatedUser.PSObject.Properties['id'] -or -not $authenticatedUser.id) {
+        throw 'Azure DevOps did not return an authenticated user. Check the organization name and that the PAT is valid and not expired.'
     }
-    $account = $data.authenticatedUser.properties.Account.'$value'
-    $displayName = [string]$data.authenticatedUser.providerDisplayName
-    if (-not $displayName) { $displayName = [string]$data.authenticatedUser.customDisplayName }
-    if (-not $displayName) { $displayName = [string]$data.authenticatedUser.uniqueName }
+    $data = [pscustomobject]@{ authenticatedUser = $authenticatedUser }
+    $account = $null
+    $props = $authenticatedUser.PSObject.Properties['properties']
+    if ($props -and $props.Value.PSObject.Properties['Account']) {
+        $account = $props.Value.Account.'$value'
+    }
+    $getProp = {
+        param($obj, $name)
+        $p = $obj.PSObject.Properties[$name]
+        if ($p) { return [string]$p.Value }
+        return ''
+    }
+    $displayName = & $getProp $authenticatedUser 'providerDisplayName'
+    if (-not $displayName) { $displayName = & $getProp $authenticatedUser 'customDisplayName' }
+    if (-not $displayName) { $displayName = & $getProp $authenticatedUser 'uniqueName' }
     $uniqueName = [string]$account
-    if (-not $uniqueName) { $uniqueName = [string]$data.authenticatedUser.uniqueName }
+    if (-not $uniqueName) { $uniqueName = & $getProp $authenticatedUser 'uniqueName' }
     return [pscustomobject]@{
-        Id = [string]$data.authenticatedUser.id
+        Id = [string]$authenticatedUser.id
         DisplayName = $displayName
         UniqueName = $uniqueName
     }
@@ -135,13 +157,17 @@ function Get-AdoAssignedTasks {
     $team = [uri]::EscapeDataString($config.TeamName)
 
     $iterations = Invoke-AdoRequest -Path "$organization/$project/$team/_apis/work/teamsettings/iterations?`$timeframe=current"
-    $iteration = @($iterations.value) | Select-Object -First 1
-    if (-not $iteration.id) {
-        throw 'No current Azure DevOps sprint was found for the configured team.'
+    $iterationValues = @()
+    if ($iterations.PSObject.Properties['value']) { $iterationValues = @($iterations.value) }
+    $iteration = $iterationValues | Select-Object -First 1
+    if (-not $iteration -or -not $iteration.PSObject.Properties['id'] -or -not $iteration.id) {
+        throw "No current sprint found for team '$($config.TeamName)' in project '$($config.Project)'. Check the team name and that it has an active iteration."
     }
 
     $board = Invoke-AdoRequest -Path "$organization/$project/$team/_apis/work/teamsettings/iterations/$($iteration.id)/workitems"
-    $ids = @($board.workItemRelations | ForEach-Object { $_.target.id } | Where-Object { $_ })
+    $relations = @()
+    if ($board.PSObject.Properties['workItemRelations']) { $relations = @($board.workItemRelations) }
+    $ids = @($relations | ForEach-Object { $_.target.id } | Where-Object { $_ })
     if ($ids.Count -eq 0) { return @() }
 
     $fields = @(
@@ -150,32 +176,51 @@ function Get-AdoAssignedTasks {
         'System.CreatedDate', 'System.ChangedDate'
     ) -join ','
     $batch = Invoke-AdoRequest -Path "$organization/$project/_apis/wit/workitems?ids=$($ids -join ',')&fields=$([uri]::EscapeDataString($fields))"
+    $batchValues = @()
+    if ($batch.PSObject.Properties['value']) { $batchValues = @($batch.value) }
 
     $identityValues = @($User.Id, $User.UniqueName, $User.DisplayName) |
         Where-Object { $_ } |
         ForEach-Object { $_.ToString().Trim().ToLowerInvariant() }
 
-    $tasks = foreach ($item in @($batch.value)) {
-        $assigned = $item.fields.'System.AssignedTo'
-        $assignedValues = @($assigned.id, $assigned.uniqueName, $assigned.displayName) |
-            Where-Object { $_ } |
-            ForEach-Object { $_.ToString().Trim().ToLowerInvariant() }
+    $tasks = foreach ($item in $batchValues) {
+        $assigned = $null
+        if ($item.fields.PSObject.Properties['System.AssignedTo']) {
+            $assigned = $item.fields.'System.AssignedTo'
+        }
+        $assignedValues = @()
+        if ($assigned) {
+            foreach ($prop in 'id', 'uniqueName', 'displayName') {
+                $member = $assigned.PSObject.Properties[$prop]
+                if ($member -and $member.Value) {
+                    $assignedValues += $member.Value.ToString().Trim().ToLowerInvariant()
+                }
+            }
+        }
         if (-not ($identityValues | Where-Object { $assignedValues -contains $_ })) { continue }
-        if (Test-DoneState ([string]$item.fields.'System.State')) { continue }
+
+        $field = {
+            param($name)
+            $p = $item.fields.PSObject.Properties[$name]
+            if ($p) { return $p.Value }
+            return $null
+        }
+        $state = [string](& $field 'System.State')
+        if (Test-DoneState $state) { continue }
 
         [pscustomobject]@{
             Id = "ado_$($item.id)"
-            Title = [string]$item.fields.'System.Title'
+            Title = [string](& $field 'System.Title')
             ScheduleTime = (Get-Date).ToString('HH:mm')
-            Priority = Convert-AdoPriority $item.fields.'Microsoft.VSTS.Common.Priority'
+            Priority = Convert-AdoPriority (& $field 'Microsoft.VSTS.Common.Priority')
             Status = 'Pending'
             Source = 'ADO'
-            CreatedAt = [string]$item.fields.'System.CreatedDate'
+            CreatedAt = [string](& $field 'System.CreatedDate')
             CompletedAt = $null
             LastRemindedAt = $null
             SnoozedUntil = $null
             AdoWorkItemId = [int]$item.id
-            AdoState = [string]$item.fields.'System.State'
+            AdoState = $state
         }
     }
     return @($tasks)
@@ -395,6 +440,23 @@ function Show-TaskReminder {
     }
     catch {
         Show-ErrorMessage "Could not update '$($Task.Title)': $($_.Exception.Message)"
+    }
+}
+
+if ($TestConnection) {
+    try {
+        $user = Get-AdoCurrentUser
+        Write-Host "Connected to Azure DevOps as $($user.DisplayName) (id $($user.Id))." -ForegroundColor Green
+        $tasks = @(Get-AdoAssignedTasks $user)
+        Write-Host "Found $($tasks.Count) active task(s) assigned to you in the current sprint." -ForegroundColor Green
+        Write-Log "Connection test succeeded for $($user.DisplayName): $($tasks.Count) active task(s)."
+        exit 0
+    }
+    catch {
+        $message = $_.Exception.Message
+        Write-Host "Azure DevOps connection test failed: $message" -ForegroundColor Red
+        Write-Log "Connection test failed: $message" 'ERROR'
+        exit 1
     }
 }
 

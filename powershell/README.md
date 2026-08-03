@@ -78,6 +78,26 @@ those too:
 %LOCALAPPDATA%\DailyTaskReminder\reminder.log
 ```
 
+## Troubleshooting
+
+Test just the ADO connection (no reminders, no prompts):
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\DailyTaskReminder.ps1 -TestConnection
+```
+
+Common failures:
+
+- **`Azure DevOps did not return an authenticated user`** — wrong organization, or the
+  PAT is expired/revoked or lacks Work Items (Read) scope.
+- **`No current sprint found for team ...`** — the team name must match Azure DevOps
+  exactly (spaces allowed), and the team needs an active iteration.
+- **TLS / secure channel errors** — the script forces TLS 1.2, which resolves the usual
+  Windows PowerShell 5.1 handshake failure against `dev.azure.com`.
+
+Organization, project, and team names may contain spaces; enter them as shown in
+Azure DevOps (they are URL-encoded automatically).
+
 ## ADO process states
 
 ADO process templates use different completion states. The worker maps:

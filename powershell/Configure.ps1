@@ -63,17 +63,19 @@ Write-Host ''
 Write-Host "Configuration saved to $ConfigPath" -ForegroundColor Green
 Write-Host 'Testing Azure DevOps connection...'
 
-try {
-    & (Join-Path $PSScriptRoot 'DailyTaskReminder.ps1') -RunOnce
-    if (-not $?) { throw 'The reminder connection test failed.' }
-    Write-Host 'Connection and one-time reminder check succeeded.' -ForegroundColor Green
+$worker = Join-Path $PSScriptRoot 'DailyTaskReminder.ps1'
+$powerShellExe = Join-Path $PSHOME 'powershell.exe'
+$output = & $powerShellExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $worker -TestConnection 2>&1
+$exitCode = $LASTEXITCODE
+
+$output | ForEach-Object { Write-Host $_ }
+
+if ($exitCode -ne 0) {
+    Write-Host ''
+    Write-Host 'Configuration was saved, but the connection test failed.' -ForegroundColor Yellow
+    Write-Host 'Fix the details above and re-run Configure.ps1 (or Install.cmd).' -ForegroundColor Yellow
+    throw 'The reminder connection test failed.'
 }
-catch {
-    [System.Windows.Forms.MessageBox]::Show(
-        "Configuration was saved, but the test failed:`n`n$($_.Exception.Message)",
-        'Daily Task Reminder',
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Warning
-    ) | Out-Null
-    throw
-}
+
+Write-Host ''
+Write-Host 'Connection test succeeded.' -ForegroundColor Green
