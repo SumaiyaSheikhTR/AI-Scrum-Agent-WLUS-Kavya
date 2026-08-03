@@ -1,0 +1,90 @@
+# Daily Task Reminder — PowerShell batch edition
+
+This is the Windows background/batch version of Daily Task Reminder. It does not
+need Node.js, a browser, or a web server.
+
+## Behavior
+
+- Starts automatically when the Windows user logs on.
+- Uses the configured ADO PAT to resolve the authenticated user's ADO id.
+- Loads active work items assigned to that user in the current team sprint.
+- On the first run each day, asks for optional additional TODOs.
+- Orders due work by scheduled time, then priority.
+- Repeats reminders at the configured interval.
+- Reminder actions:
+  - **Yes** — complete the task and immediately move to the next due task.
+  - **No** — mark it in progress.
+  - **Cancel** — snooze for 10 minutes.
+- For ADO tasks, completing the reminder updates `System.State` in ADO.
+- The worker is tied to the interactive Windows session and ends at logout.
+
+## Requirements
+
+- Windows 10/11
+- Windows PowerShell 5.1
+- Network access to `https://dev.azure.com`
+- A PAT with at least:
+  - **Work Items: Read** to import tasks
+  - **Work Items: Read & write** to mark ADO tasks complete
+
+## Install
+
+1. Download or clone the repository.
+2. Open the `powershell` folder.
+3. Double-click **`Install.cmd`**.
+4. Enter organization, project, team, PAT, and reminder interval.
+
+The PAT is encrypted with Windows DPAPI and can only be decrypted by the same
+Windows user on the same machine. Configuration and state are stored under:
+
+```text
+%LOCALAPPDATA%\DailyTaskReminder
+```
+
+The installer creates a Windows Scheduled Task named:
+
+```text
+Daily Task Reminder
+```
+
+## Run without installing
+
+Double-click `Run.cmd`, or:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\DailyTaskReminder.ps1
+```
+
+Only one worker can run per Windows session.
+
+## Reconfigure
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Configure.ps1
+```
+
+## Uninstall
+
+Double-click `Uninstall.cmd`. This keeps config and daily history. To remove
+those too:
+
+```powershell
+.\Uninstall.ps1 -RemoveData
+```
+
+## Logs
+
+```text
+%LOCALAPPDATA%\DailyTaskReminder\reminder.log
+```
+
+## ADO process states
+
+ADO process templates use different completion states. The worker maps:
+
+- `New`, `Active`, `Resolved` → `Closed`
+- `To Do`, `Committed`, `In Progress` → `Done`
+- other states → `Completed`
+
+If your project uses custom states, adjust `Get-AdoCompletionState` in
+`DailyTaskReminder.ps1`.

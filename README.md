@@ -2,6 +2,13 @@
 
 Standalone Azure DevOps daily task reminder app (separate from AI Scrum Agent).
 
+## Windows PowerShell batch edition
+
+For a browser-free background process, use the self-contained
+[`powershell`](./powershell) edition. Double-click `powershell\Install.cmd` to
+configure ADO and register the reminder at Windows logon. It requires no Node.js
+or web server.
+
 ## What it does
 
 1. Connects with your ADO org / project / team / PAT
