@@ -198,9 +198,12 @@ function Get-AdoCurrentUser {
     }
 }
 
-function Test-DoneState {
+function Test-ActiveBoardState {
     param([string]$State)
-    return @('done', 'closed', 'completed', 'removed') -contains $State.ToLowerInvariant()
+    # Azure DevOps process templates name underway work differently:
+    # Agile = Active, Scrum = Committed, Basic = In Progress.
+    # Deliberately exclude New / To Do and every completion state.
+    return @('active', 'in progress', 'committed') -contains $State.Trim().ToLowerInvariant()
 }
 
 function Convert-AdoPriority {
@@ -267,7 +270,7 @@ function Get-AdoAssignedTasks {
             return $null
         }
         $state = [string](& $field 'System.State')
-        if (Test-DoneState $state) { continue }
+        if (-not (Test-ActiveBoardState $state)) { continue }
 
         [pscustomobject]@{
             Id = "ado_$($item.id)"

@@ -18,7 +18,9 @@ The UI is WPF-based, not classic message boxes:
 
 - Starts automatically when the Windows user logs on.
 - Uses the configured ADO PAT to resolve the authenticated user's ADO id.
-- Loads active work items assigned to that user in the current team sprint.
+- Loads only underway work items assigned to that user in the current team sprint:
+  `Active` (Agile), `Committed` (Scrum), or `In Progress` (Basic).
+- Excludes `New`, `To Do`, `Done`, `Closed`, `Completed`, and other non-active states.
 - On the first run each day, asks for optional additional TODOs.
 - Orders due work by scheduled time, then priority.
 - Repeats reminders at the configured interval.
