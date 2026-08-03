@@ -15,7 +15,7 @@ if (-not $SkipConfigure -or -not (Test-Path -LiteralPath $ConfigPath)) {
 }
 
 $powerShellExe = Join-Path $PSHOME 'powershell.exe'
-$arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$WorkerPath`""
+$arguments = "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$WorkerPath`""
 $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $arguments -WorkingDirectory $PSScriptRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited

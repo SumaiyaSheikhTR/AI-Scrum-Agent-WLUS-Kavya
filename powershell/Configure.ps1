@@ -65,7 +65,7 @@ Write-Host 'Testing Azure DevOps connection...'
 
 $worker = Join-Path $PSScriptRoot 'DailyTaskReminder.ps1'
 $powerShellExe = Join-Path $PSHOME 'powershell.exe'
-$output = & $powerShellExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $worker -TestConnection 2>&1
+$output = & $powerShellExe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File $worker -TestConnection 2>&1
 $exitCode = $LASTEXITCODE
 
 $output | ForEach-Object { Write-Host $_ }

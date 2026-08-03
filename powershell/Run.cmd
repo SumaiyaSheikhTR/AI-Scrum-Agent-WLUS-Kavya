@@ -1,4 +1,4 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0DailyTaskReminder.ps1"
+start "" powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0DailyTaskReminder.ps1"

@@ -3,6 +3,17 @@
 This is the Windows background/batch version of Daily Task Reminder. It does not
 need Node.js, a browser, or a web server.
 
+## Interface
+
+The UI is WPF-based, not classic message boxes:
+
+- **Daily planner** — a full window on the first run each day listing imported ADO
+  tasks and letting you add personal TODOs inline (Enter adds a row).
+- **Reminder card** — a borderless card that slides into the bottom-right corner with a
+  priority accent, day-progress bar, and Mark done / In progress / Snooze (5 min, 15 min, 1 hour).
+- **Tray icon** — right-click for today's queue, manual ADO sync, pause for an hour, or exit.
+  Double-click opens the queue.
+
 ## Behavior
 
 - Starts automatically when the Windows user logs on.
@@ -11,11 +22,9 @@ need Node.js, a browser, or a web server.
 - On the first run each day, asks for optional additional TODOs.
 - Orders due work by scheduled time, then priority.
 - Repeats reminders at the configured interval.
-- Reminder actions:
-  - **Yes** — complete the task and immediately move to the next due task.
-  - **No** — mark it in progress.
-  - **Cancel** — snooze for 10 minutes.
+- Reminder actions: mark done (advances to the next due task), in progress, or snooze.
 - For ADO tasks, completing the reminder updates `System.State` in ADO.
+- Rolls over automatically at midnight and re-opens the planner for the new day.
 - The worker is tied to the interactive Windows session and ends at logout.
 
 ## Requirements

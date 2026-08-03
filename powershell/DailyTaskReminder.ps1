@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName Microsoft.VisualBasic
 
+. (Join-Path $PSScriptRoot 'UI.ps1')
+
 # Windows PowerShell 5.1 defaults to TLS 1.0/1.1, which dev.azure.com rejects.
 try {
     [Net.ServicePointManager]::SecurityProtocol =
@@ -361,35 +363,16 @@ function Sync-AdoTasks {
 
 function Add-ManualTasksForToday {
     $tasks = @(Get-TodayTasks)
-    while ($true) {
-        $title = [Microsoft.VisualBasic.Interaction]::InputBox(
-            "Active ADO tasks loaded: $(@($tasks | Where-Object Source -eq 'ADO').Count).`n`nEnter an additional TODO, or leave blank to finish.",
-            'Daily Task Reminder - Today''s plan',
-            ''
-        ).Trim()
-        if (-not $title) { break }
+    $adoTasks = @($tasks | Where-Object { $_.Source -eq 'ADO' })
 
-        $time = [Microsoft.VisualBasic.Interaction]::InputBox(
-            'Reminder time (24-hour HH:mm):',
-            "Schedule: $title",
-            (Get-Date).ToString('HH:mm')
-        ).Trim()
-        if ($time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {
-            $time = (Get-Date).ToString('HH:mm')
-        }
+    $plan = Show-PlannerWindow -UserName $script:CurrentUser.DisplayName -AdoTasks $adoTasks
 
-        $priority = [Microsoft.VisualBasic.Interaction]::InputBox(
-            'Priority: High, Medium, or Low',
-            "Priority: $title",
-            'Medium'
-        ).Trim()
-        if (@('High', 'Medium', 'Low') -notcontains $priority) { $priority = 'Medium' }
-
+    foreach ($entry in @($plan.ManualTasks)) {
         $tasks += [pscustomobject]@{
             Id = "manual_$([guid]::NewGuid().ToString('N'))"
-            Title = $title
-            ScheduleTime = $time
-            Priority = $priority
+            Title = $entry.Title
+            ScheduleTime = $entry.ScheduleTime
+            Priority = $entry.Priority
             Status = 'Pending'
             Source = 'Manual'
             CreatedAt = (Get-Date).ToString('o')
@@ -401,15 +384,8 @@ function Add-ManualTasksForToday {
         }
     }
 
-    if ($tasks.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show(
-            'No tasks were found or entered. The reminder will check ADO again in 15 minutes.',
-            'Daily Task Reminder',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
-    }
-    Set-TodayTasks -Tasks $tasks -Confirmed $true
+    Set-TodayTasks -Tasks $tasks -Confirmed $plan.Confirmed
+    Write-Log "Daily plan confirmed=$($plan.Confirmed) with $(@($plan.ManualTasks).Count) manual task(s)."
 }
 
 function Get-AdoCompletionState {
@@ -480,22 +456,21 @@ function Show-TaskReminder {
     $stored.LastRemindedAt = (Get-Date).ToString('o')
     Set-TodayTasks $tasks
 
-    $remaining = @($tasks | Where-Object Status -ne 'Completed').Count
-    $style = [Microsoft.VisualBasic.MsgBoxStyle]::YesNoCancel -bor
-        [Microsoft.VisualBasic.MsgBoxStyle]::Information -bor
-        [Microsoft.VisualBasic.MsgBoxStyle]::SystemModal
-    $result = [Microsoft.VisualBasic.Interaction]::MsgBox(
-        "$($Task.Title)`n`nTime: $($Task.ScheduleTime)   Priority: $($Task.Priority)`nSource: $($Task.Source)$(if ($Task.AdoWorkItemId) { " #$($Task.AdoWorkItemId)" })`n`n$remaining task(s) remain today.`n`nYes = Mark done`nNo = In progress`nCancel = Snooze 10 minutes",
-        $style,
-        'Daily Task Reminder'
-    )
+    $completed = @($tasks | Where-Object { $_.Status -eq 'Completed' }).Count
+    $remaining = $tasks.Count - $completed
+
+    $result = Show-ReminderWindow -Task $Task -Remaining $remaining -Total $tasks.Count -Completed $completed
 
     try {
         switch ($result) {
-            'Yes' { Update-Task $Task.Id 'Completed' }
-            'No' { Update-Task $Task.Id 'InProgress' }
-            default { Update-Task $Task.Id $Task.Status 10 }
+            'Done' { Update-Task $Task.Id 'Completed' }
+            'InProgress' { Update-Task $Task.Id 'InProgress' }
+            'Snooze5' { Update-Task $Task.Id $Task.Status 5 }
+            'Snooze15' { Update-Task $Task.Id $Task.Status 15 }
+            'Snooze60' { Update-Task $Task.Id $Task.Status 60 }
+            default { }
         }
+        Write-Log "Reminder for '$($Task.Title)' resolved as $result."
     }
     catch {
         Show-ErrorMessage "Could not update '$($Task.Title)': $($_.Exception.Message)"
@@ -526,29 +501,130 @@ if (-not $createdNew) {
     exit 0
 }
 
+function Invoke-ReminderCycle {
+    if ($script:ReminderBusy) { return }
+    if ($script:PausedUntil -and (Get-Date) -lt $script:PausedUntil) { return }
+
+    $script:ReminderBusy = $true
+    try {
+        if ((Get-Date) - $script:LastAdoSync -ge [timespan]::FromMinutes(15)) {
+            try { Sync-AdoTasks }
+            catch { Write-Log "ADO refresh failed: $($_.Exception.Message)" 'WARN' }
+        }
+
+        if ((Get-LocalDateKey) -ne $script:ActiveDay) {
+            $script:ActiveDay = Get-LocalDateKey
+            if (-not (Test-TodayConfirmed)) { Add-ManualTasksForToday }
+        }
+
+        $task = Get-NextDueTask
+        if ($task) { Show-TaskReminder $task }
+    }
+    finally {
+        $script:ReminderBusy = $false
+    }
+}
+
+function New-TrayIcon {
+    $notify = New-Object System.Windows.Forms.NotifyIcon
+    $notify.Icon = [System.Drawing.SystemIcons]::Information
+    $notify.Text = 'Daily Task Reminder'
+    $notify.Visible = $true
+
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $itemQueue = $menu.Items.Add("Today's tasks")
+    $itemSync = $menu.Items.Add('Sync Azure DevOps')
+    $itemPause = $menu.Items.Add('Pause for 1 hour')
+    [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+    $itemExit = $menu.Items.Add('Exit')
+    $notify.ContextMenuStrip = $menu
+
+    $showQueue = {
+        if ($script:ReminderBusy) { return }
+        $script:ReminderBusy = $true
+        try {
+            $result = Show-QueueWindow -Tasks (Get-TodayTasks)
+            foreach ($taskId in @($result.Completed)) {
+                try { Update-Task $taskId 'Completed' }
+                catch { Show-ErrorMessage "Could not complete task: $($_.Exception.Message)" }
+            }
+            if ($result.SyncRequested) {
+                try { Sync-AdoTasks }
+                catch { Show-ErrorMessage "Sync failed: $($_.Exception.Message)" }
+            }
+        }
+        finally { $script:ReminderBusy = $false }
+    }
+
+    $itemQueue.Add_Click($showQueue)
+    $notify.Add_DoubleClick($showQueue)
+
+    $itemSync.Add_Click({
+        try {
+            Sync-AdoTasks
+            Show-ToastMessage -NotifyIcon $notify -Message "Synced. $(@(Get-TodayTasks | Where-Object { $_.Status -ne 'Completed' }).Count) task(s) open."
+        }
+        catch { Show-ErrorMessage "Sync failed: $($_.Exception.Message)" }
+    }.GetNewClosure())
+
+    $itemPause.Add_Click({
+        $script:PausedUntil = (Get-Date).AddHours(1)
+        Show-ToastMessage -NotifyIcon $notify -Message 'Reminders paused for 1 hour.'
+        Write-Log 'Reminders paused for 1 hour.'
+    }.GetNewClosure())
+
+    $itemExit.Add_Click({
+        Write-Log 'Exit requested from tray menu.'
+        $notify.Visible = $false
+        [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown()
+    }.GetNewClosure())
+
+    return $notify
+}
+
+$script:ReminderBusy = $false
+$script:PausedUntil = $null
+$script:ActiveDay = Get-LocalDateKey
+$notifyIcon = $null
+
 try {
     Set-Content -LiteralPath $PidPath -Value $PID
     Write-Log "Worker started (PID $PID)."
     $script:CurrentUser = Get-AdoCurrentUser
     Sync-AdoTasks
-    if (-not (Test-TodayConfirmed)) {
-        Add-ManualTasksForToday
-    }
 
-    do {
-        if ((Get-Date) - $script:LastAdoSync -ge [timespan]::FromMinutes(15)) {
-            try { Sync-AdoTasks } catch { Write-Log "ADO refresh failed: $($_.Exception.Message)" 'WARN' }
-        }
+    if ($RunOnce) {
+        if (-not (Test-TodayConfirmed)) { Add-ManualTasksForToday }
         $task = Get-NextDueTask
         if ($task) { Show-TaskReminder $task }
-        if (-not $RunOnce) { Start-Sleep -Seconds 30 }
-    } while (-not $RunOnce)
+        exit 0
+    }
+
+    if (-not (Test-TodayConfirmed)) { Add-ManualTasksForToday }
+
+    $notifyIcon = New-TrayIcon
+    Show-ToastMessage -NotifyIcon $notifyIcon -Message "Tracking $(@(Get-TodayTasks | Where-Object { $_.Status -ne 'Completed' }).Count) task(s) today."
+
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [timespan]::FromSeconds(30)
+    $timer.Add_Tick({
+        try { Invoke-ReminderCycle }
+        catch { Write-Log "Reminder cycle failed: $($_.Exception.Message)" 'WARN' }
+    })
+    $timer.Start()
+
+    Invoke-ReminderCycle
+    [System.Windows.Threading.Dispatcher]::Run()
 }
 catch {
     Show-ErrorMessage $_.Exception.Message
     exit 1
 }
 finally {
+    if ($notifyIcon) {
+        $notifyIcon.Visible = $false
+        $notifyIcon.Dispose()
+    }
     Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
     if ($mutex) {
         $mutex.ReleaseMutex()
