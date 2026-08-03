@@ -104,7 +104,11 @@ function Invoke-AdoRequest {
         }
         if ($Method -eq 'PATCH') {
             $parameters['ContentType'] = 'application/json-patch+json'
-            $parameters['Body'] = ($Body | ConvertTo-Json -Depth 10)
+            # JSON Patch requires a top-level array. Windows PowerShell collapses a
+            # single-element array into a bare object, which ADO rejects with HTTP 400.
+            $json = ConvertTo-Json -InputObject @($Body) -Depth 10
+            if (-not $json.TrimStart().StartsWith('[')) { $json = "[$json]" }
+            $parameters['Body'] = $json
         }
 
         try {
@@ -393,12 +397,15 @@ function Add-ManualTasksForToday {
     Write-Log "Daily plan confirmed=$($plan.Confirmed) with $(@($plan.ManualTasks).Count) manual task(s)."
 }
 
-function Get-AdoCompletionState {
+function Get-AdoCompletionStates {
     param([string]$CurrentState)
-    switch ($CurrentState.ToLowerInvariant()) {
-        { $_ -in @('new', 'active', 'resolved') } { return 'Closed' }
-        { $_ -in @('to do', 'committed', 'in progress') } { return 'Done' }
-        default { return 'Completed' }
+    # Process templates disagree on the completed state name, and only some
+    # transitions are legal, so try the most likely candidate first.
+    switch ($CurrentState.Trim().ToLowerInvariant()) {
+        'active' { return @('Closed', 'Resolved', 'Done', 'Completed') }
+        'committed' { return @('Done', 'Closed', 'Completed') }
+        'in progress' { return @('Done', 'Closed', 'Completed') }
+        default { return @('Done', 'Closed', 'Completed', 'Resolved') }
     }
 }
 
@@ -406,9 +413,23 @@ function Complete-AdoTask {
     param($Task)
     $config = Get-Config
     $project = [uri]::EscapeDataString($config.Project)
-    $target = Get-AdoCompletionState ([string]$Task.AdoState)
-    $patch = @(@{ op = 'add'; path = '/fields/System.State'; value = $target })
-    Invoke-AdoRequest -Path "$($config.Organization)/$project/_apis/wit/workitems/$($Task.AdoWorkItemId)" -Method PATCH -Body $patch | Out-Null
+    $path = "$($config.Organization)/$project/_apis/wit/workitems/$($Task.AdoWorkItemId)"
+    $errors = @()
+
+    foreach ($state in (Get-AdoCompletionStates ([string]$Task.AdoState))) {
+        $patch = @(@{ op = 'add'; path = '/fields/System.State'; value = $state })
+        try {
+            $updated = Invoke-AdoRequest -Path $path -Method PATCH -Body $patch
+            Write-Log "Work item $($Task.AdoWorkItemId) moved to '$state'."
+            return $updated
+        }
+        catch {
+            $errors += "$state -> $($_.Exception.Message)"
+            Write-Log "Work item $($Task.AdoWorkItemId) rejected state '$state'." 'WARN'
+        }
+    }
+
+    throw "Azure DevOps rejected every completion state for #$($Task.AdoWorkItemId) (current state '$($Task.AdoState)').`n$($errors -join "`n")"
 }
 
 function Update-Task {
@@ -418,7 +439,10 @@ function Update-Task {
     if (-not $task) { return }
 
     if ($Status -eq 'Completed' -and $task.Source -eq 'ADO') {
-        Complete-AdoTask $task
+        $updated = Complete-AdoTask $task
+        $fields = Get-OptionalProperty $updated 'fields'
+        $newState = [string](Get-OptionalProperty $fields 'System.State')
+        if ($newState) { $task.AdoState = $newState }
     }
 
     $task.Status = $Status

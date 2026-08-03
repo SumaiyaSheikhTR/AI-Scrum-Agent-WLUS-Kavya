@@ -120,11 +120,11 @@ Azure DevOps (they are URL-encoded automatically).
 
 ## ADO process states
 
-ADO process templates use different completion states. The worker maps:
+Completion state names differ per process template, so the worker tries candidates in
+order and keeps the first the server accepts:
 
-- `New`, `Active`, `Resolved` → `Closed`
-- `To Do`, `Committed`, `In Progress` → `Done`
-- other states → `Completed`
+- `Active` → `Closed`, `Resolved`, `Done`, `Completed`
+- `Committed` / `In Progress` → `Done`, `Closed`, `Completed`
 
-If your project uses custom states, adjust `Get-AdoCompletionState` in
-`DailyTaskReminder.ps1`.
+If every candidate is rejected, the error lists each attempt and the reason. Adjust
+`Get-AdoCompletionStates` in `DailyTaskReminder.ps1` for custom states.
