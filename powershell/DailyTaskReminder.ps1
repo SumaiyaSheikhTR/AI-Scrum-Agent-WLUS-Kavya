@@ -285,6 +285,7 @@ function Get-AdoAssignedTasks {
             SnoozedUntil = $null
             AdoWorkItemId = [int]$item.id
             AdoState = $state
+            AdoUrl = "https://dev.azure.com/$organization/$project/_workitems/edit/$($item.id)"
         }
     }
     return @($tasks)
@@ -384,6 +385,7 @@ function Add-ManualTasksForToday {
             SnoozedUntil = $null
             AdoWorkItemId = $null
             AdoState = $null
+            AdoUrl = $null
         }
     }
 

@@ -8,11 +8,14 @@ need Node.js, a browser, or a web server.
 The UI is WPF-based, not classic message boxes:
 
 - **Daily planner** — a full window on the first run each day listing imported ADO
-  tasks and letting you add personal TODOs inline (Enter adds a row).
+  tasks with “Open in ADO” links and letting you optionally add personal TODOs
+  inline (Enter adds a row). Adding personal tasks is never required.
 - **Reminder card** — a borderless card that slides into the bottom-right corner with a
-  priority accent, day-progress bar, and Mark done / In progress / Snooze (5 min, 15 min, 1 hour).
+  priority accent, day-progress bar, Open in ADO, and Mark done / In progress /
+  Snooze (5 min, 15 min, 1 hour).
 - **Tray icon** — right-click for today's queue, manual ADO sync, pause for an hour, or exit.
-  Double-click opens the queue.
+  Double-click opens the queue. The queue lists only open work; completed items
+  disappear immediately.
 
 ## Behavior
 

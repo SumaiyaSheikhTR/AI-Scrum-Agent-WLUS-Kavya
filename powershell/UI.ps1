@@ -30,6 +30,14 @@ function Get-PriorityColor {
     }
 }
 
+function Get-OptionalProperty {
+    param($Object, [string]$Name)
+    if (-not $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+
 function Get-SharedResourceXaml {
     return @'
   <Window.Resources>
@@ -244,16 +252,20 @@ $(Get-SharedResourceXaml)
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <Button x:Name="BtnSnooze" Grid.Column="0" Style="{StaticResource BaseButton}"
-                Content="Snooze &#x25BE;" HorizontalAlignment="Left">
-          <Button.ContextMenu>
-            <ContextMenu x:Name="SnoozeMenu">
-              <MenuItem x:Name="Snooze5" Header="5 minutes"/>
-              <MenuItem x:Name="Snooze15" Header="15 minutes"/>
-              <MenuItem x:Name="Snooze60" Header="1 hour"/>
-            </ContextMenu>
-          </Button.ContextMenu>
-        </Button>
+        <StackPanel Grid.Column="0" Orientation="Horizontal">
+          <Button x:Name="BtnOpenAdo" Style="{StaticResource BaseButton}"
+                  Content="Open in ADO &#x2197;" Margin="0,0,8,0"/>
+          <Button x:Name="BtnSnooze" Style="{StaticResource BaseButton}"
+                  Content="Snooze &#x25BE;">
+            <Button.ContextMenu>
+              <ContextMenu x:Name="SnoozeMenu">
+                <MenuItem x:Name="Snooze5" Header="5 minutes"/>
+                <MenuItem x:Name="Snooze15" Header="15 minutes"/>
+                <MenuItem x:Name="Snooze60" Header="1 hour"/>
+              </ContextMenu>
+            </Button.ContextMenu>
+          </Button>
+        </StackPanel>
         <Button x:Name="BtnProgress" Grid.Column="1" Style="{StaticResource BaseButton}"
                 Content="In progress" Margin="0,0,8,0"/>
         <Button x:Name="BtnDone" Grid.Column="2" Style="{StaticResource PrimaryButton}"
@@ -275,6 +287,15 @@ $(Get-SharedResourceXaml)
     $window.FindName('Snooze5').Add_Click({ & $close 'Snooze5' }.GetNewClosure())
     $window.FindName('Snooze15').Add_Click({ & $close 'Snooze15' }.GetNewClosure())
     $window.FindName('Snooze60').Add_Click({ & $close 'Snooze60' }.GetNewClosure())
+
+    $openAdo = $window.FindName('BtnOpenAdo')
+    $adoUrl = [string](Get-OptionalProperty $Task 'AdoUrl')
+    if ($adoUrl) {
+        $openAdo.Add_Click({ Start-Process $adoUrl }.GetNewClosure())
+    }
+    else {
+        $openAdo.Visibility = 'Collapsed'
+    }
 
     $snoozeButton = $window.FindName('BtnSnooze')
     $snoozeButton.Add_Click({
@@ -356,6 +377,7 @@ $(Get-SharedResourceXaml)
                       <ColumnDefinition Width="Auto"/>
                       <ColumnDefinition Width="*"/>
                       <ColumnDefinition Width="Auto"/>
+                      <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <Border Grid.Column="0" Width="8" Height="8" CornerRadius="4" VerticalAlignment="Center"
                             Background="{Binding Accent}"/>
@@ -366,6 +388,9 @@ $(Get-SharedResourceXaml)
                     </StackPanel>
                     <TextBlock Grid.Column="2" Text="{Binding Time}" FontSize="12"
                                Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    <Button Grid.Column="3" Style="{StaticResource BaseButton}"
+                            Content="Open &#x2197;" Tag="{Binding Url}" Margin="10,0,0,0"
+                            Padding="10,5" FontSize="11"/>
                   </Grid>
                 </Border>
               </DataTemplate>
@@ -442,9 +467,19 @@ $(Get-SharedResourceXaml)
             Meta   = "$($task.Priority) priority  ·  ADO #$($task.AdoWorkItemId)"
             Time   = $task.ScheduleTime
             Accent = (Get-PriorityColor $task.Priority)
+            Url    = Get-OptionalProperty $task 'AdoUrl'
         })
     }
-    $window.FindName('AdoList').ItemsSource = $adoView
+    $adoList = $window.FindName('AdoList')
+    $adoList.ItemsSource = $adoView
+    $adoList.AddHandler(
+        [System.Windows.Controls.Primitives.ButtonBase]::ClickEvent,
+        [System.Windows.RoutedEventHandler] {
+            param($sender, $e)
+            $button = $e.OriginalSource -as [System.Windows.Controls.Button]
+            if ($button -and $button.Tag) { Start-Process ([string]$button.Tag) }
+        }
+    )
 
     $manualView = New-Object System.Collections.ObjectModel.ObservableCollection[object]
     $window.FindName('ManualList').ItemsSource = $manualView
@@ -503,6 +538,10 @@ Today's queue with inline status actions. Returns a list of requested changes.
 function Show-QueueWindow {
     param([array]$Tasks = @())
 
+    # The queue is intentionally an active-work view. Completed items disappear;
+    # history remains in state.json but is not shown in the operational list.
+    $Tasks = @($Tasks | Where-Object { $_.Status -ne 'Completed' })
+
     $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -545,6 +584,7 @@ $(Get-SharedResourceXaml)
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                   </Grid.ColumnDefinitions>
                   <Border Grid.Column="0" Width="8" Height="8" CornerRadius="4"
                           VerticalAlignment="Center" Background="{Binding Accent}"/>
@@ -554,9 +594,12 @@ $(Get-SharedResourceXaml)
                     <TextBlock Text="{Binding Meta}" FontSize="11" Foreground="{StaticResource Muted}"
                                Margin="0,3,0,0"/>
                   </StackPanel>
-                  <Button Grid.Column="2" Style="{StaticResource BaseButton}" Content="{Binding ActionLabel}"
+                  <Button Grid.Column="2" Style="{StaticResource BaseButton}" Content="Open &#x2197;"
+                          Padding="10,6" FontSize="11" Tag="{Binding Url}"
+                          CommandParameter="Open" IsEnabled="{Binding HasUrl}" Margin="0,0,8,0"/>
+                  <Button Grid.Column="3" Style="{StaticResource BaseButton}" Content="Mark done"
                           Padding="12,6" FontSize="12" Tag="{Binding Id}"
-                          IsEnabled="{Binding CanComplete}"/>
+                          CommandParameter="Complete"/>
                 </Grid>
               </Border>
             </DataTemplate>
@@ -582,26 +625,23 @@ $(Get-SharedResourceXaml)
     $script:QueueSyncRequested = $false
 
     $view = New-Object System.Collections.ObjectModel.ObservableCollection[object]
-    $completedCount = 0
     foreach ($task in $Tasks) {
-        $isDone = $task.Status -eq 'Completed'
-        if ($isDone) { $completedCount++ }
         $source = if ($task.AdoWorkItemId) { "ADO #$($task.AdoWorkItemId)" } else { 'Personal' }
         $view.Add([pscustomobject]@{
             Id = $task.Id
             Title = $task.Title
             Meta = "$($task.ScheduleTime)  ·  $($task.Priority)  ·  $source  ·  $($task.Status)"
             Accent = (Get-PriorityColor $task.Priority)
-            Strike = if ($isDone) { [System.Windows.TextDecorations]::Strikethrough } else { $null }
-            Fade = if ($isDone) { 0.5 } else { 1.0 }
-            ActionLabel = if ($isDone) { 'Done' } else { 'Mark done' }
-            CanComplete = -not $isDone
+            Strike = $null
+            Fade = 1.0
+            Url = Get-OptionalProperty $task 'AdoUrl'
+            HasUrl = [bool](Get-OptionalProperty $task 'AdoUrl')
         })
     }
 
     $list = $window.FindName('TaskList')
     $list.ItemsSource = $view
-    $window.FindName('LblSummary').Text = "$completedCount of $(@($Tasks).Count) completed"
+    $window.FindName('LblSummary').Text = "$(@($Tasks).Count) active task(s)"
 
     # Click events bubble from the templated buttons, so one handler covers every row.
     $list.AddHandler(
@@ -610,6 +650,10 @@ $(Get-SharedResourceXaml)
             param($sender, $e)
             $button = $e.OriginalSource -as [System.Windows.Controls.Button]
             if (-not $button -or -not $button.Tag) { return }
+            if ([string]$button.CommandParameter -eq 'Open') {
+                Start-Process ([string]$button.Tag)
+                return
+            }
             [void]$script:QueueCompleted.Add([string]$button.Tag)
             $button.IsEnabled = $false
             $button.Content = 'Done'
