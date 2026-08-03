@@ -94,6 +94,12 @@ Common failures:
   exactly (spaces allowed), and the team needs an active iteration.
 - **TLS / secure channel errors** — the script forces TLS 1.2, which resolves the usual
   Windows PowerShell 5.1 handshake failure against `dev.azure.com`.
+- **HTTP 400 on `connectionData`** — that endpoint is preview-only, so the script requests
+  it with a `-preview` api-version and falls back to no api-version. A released version
+  such as `7.1` alone returns `VssInvalidPreviewVersionException`.
+
+Errors now include the HTTP status, the Azure DevOps message, and the request URL
+(the PAT is sent in a header and is never part of the URL).
 
 Organization, project, and team names may contain spaces; enter them as shown in
 Azure DevOps (they are URL-encoded automatically).

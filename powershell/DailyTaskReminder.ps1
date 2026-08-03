@@ -73,20 +73,25 @@ function Invoke-AdoRequest {
     param(
         [Parameter(Mandatory)][string]$Path,
         [ValidateSet('GET', 'PATCH')][string]$Method = 'GET',
-        [object]$Body
+        [object]$Body,
+        [string]$ApiVersion,
+        [switch]$NoApiVersion
     )
 
     $config = Get-Config
+    if (-not $ApiVersion) { $ApiVersion = $config.ApiVersion }
     $pat = Get-PlainPat $config.ProtectedPat
     try {
         $token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
         $headers = @{ Authorization = "Basic $token" }
         $uri = "https://dev.azure.com/$Path"
-        if ($uri -notmatch '\?') {
-            $uri += "?api-version=$($config.ApiVersion)"
-        }
-        elseif ($uri -notmatch 'api-version=') {
-            $uri += "&api-version=$($config.ApiVersion)"
+        if (-not $NoApiVersion) {
+            if ($uri -notmatch '\?') {
+                $uri += "?api-version=$ApiVersion"
+            }
+            elseif ($uri -notmatch 'api-version=') {
+                $uri += "&api-version=$ApiVersion"
+            }
         }
 
         $parameters = @{
@@ -99,16 +104,70 @@ function Invoke-AdoRequest {
             $parameters['ContentType'] = 'application/json-patch+json'
             $parameters['Body'] = ($Body | ConvertTo-Json -Depth 10)
         }
-        return Invoke-RestMethod @parameters
+
+        try {
+            return Invoke-RestMethod @parameters
+        }
+        catch {
+            throw (Get-AdoRequestError -ErrorRecord $_ -Uri $uri)
+        }
     }
     finally {
         $pat = $null
     }
 }
 
+function Get-AdoRequestError {
+    param($ErrorRecord, [string]$Uri)
+
+    $status = ''
+    $detail = ''
+    $response = $null
+    if ($ErrorRecord.Exception.PSObject.Properties['Response']) {
+        $response = $ErrorRecord.Exception.Response
+    }
+
+    if ($response) {
+        try { $status = "HTTP $([int]$response.StatusCode) " } catch { }
+        try {
+            $stream = $response.GetResponseStream()
+            $reader = New-Object IO.StreamReader($stream)
+            $raw = $reader.ReadToEnd()
+            $reader.Close()
+            if ($raw) {
+                try {
+                    $parsed = $raw | ConvertFrom-Json
+                    if ($parsed.PSObject.Properties['message']) { $detail = [string]$parsed.message }
+                }
+                catch { }
+                if (-not $detail) { $detail = $raw.Trim() }
+            }
+        }
+        catch { }
+    }
+
+    if (-not $detail) { $detail = $ErrorRecord.Exception.Message }
+    if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) + '...' }
+
+    # The PAT travels in the Authorization header, so the URI is safe to surface.
+    return "$status$detail`n  Request: $Uri"
+}
+
 function Get-AdoCurrentUser {
     $config = Get-Config
-    $data = Invoke-AdoRequest -Path "$($config.Organization)/_apis/connectionData?connectOptions=1&lastChangeId=-1&lastChangeId64=-1"
+    # connectionData is a preview-only resource: a released api-version (e.g. 7.1)
+    # is rejected with HTTP 400 VssInvalidPreviewVersionException.
+    $previewVersion = $config.ApiVersion
+    if ($previewVersion -notlike '*-preview*') { $previewVersion = "$previewVersion-preview" }
+
+    $endpoint = "$($config.Organization)/_apis/connectionData?connectOptions=1&lastChangeId=-1&lastChangeId64=-1"
+    try {
+        $data = Invoke-AdoRequest -Path $endpoint -ApiVersion $previewVersion
+    }
+    catch {
+        Write-Log "connectionData with api-version=$previewVersion failed: $($_.Exception.Message). Retrying without api-version." 'WARN'
+        $data = Invoke-AdoRequest -Path $endpoint -NoApiVersion
+    }
     $authenticatedUser = $data.PSObject.Properties['authenticatedUser'].Value
     if (-not $authenticatedUser -or -not $authenticatedUser.PSObject.Properties['id'] -or -not $authenticatedUser.id) {
         throw 'Azure DevOps did not return an authenticated user. Check the organization name and that the PAT is valid and not expired.'
