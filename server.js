@@ -398,6 +398,14 @@ app.post('/api/ado-proxy/workitems/create', async (req, res) => {
       }
     });
 
+    // An unauthenticated request is answered with an HTML sign-in page and
+    // HTTP 200, so the payload has to be checked instead of the status code.
+    if (!response.data || typeof response.data !== 'object' || response.data.id === undefined) {
+      return res.status(401).json({
+        error: 'Azure DevOps did not return a created work item. Check that REACT_APP_ADO_PAT is valid and has work item write access.'
+      });
+    }
+
     res.json(response.data);
   } catch (error) {
     console.error('Error in ADO create work item proxy:');

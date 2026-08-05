@@ -1188,6 +1188,21 @@ class AdoService {
   }
 
   /**
+   * An unauthenticated request to dev.azure.com is answered with an HTML sign-in
+   * page and HTTP 200 rather than a 401, so a created work item has to be
+   * recognised by its payload instead of by the status code.
+   */
+  private assertCreatedWorkItem(data: any): any {
+    if (!data || typeof data !== 'object' || typeof data.id === 'undefined') {
+      throw new Error(
+        'Azure DevOps did not return a created work item. The personal access token is likely invalid or expired.'
+      );
+    }
+
+    return data;
+  }
+
+  /**
    * Build the JSON Patch document used to create a work item.
    *
    * System.WorkItemType is deliberately absent: the type is taken from the
@@ -1302,6 +1317,8 @@ class AdoService {
 
     console.log(`Creating ${type} "${title}" with patch document:`, JSON.stringify(document));
 
+    let created: any;
+
     try {
       const response = await this.client.post(path, document, {
         params: {
@@ -1312,31 +1329,33 @@ class AdoService {
         }
       });
 
-      return this.mapWorkItem(response.data);
+      created = response.data;
     } catch (error: any) {
       // No response means the browser blocked the cross-origin call to
       // dev.azure.com; retry through the local proxy, which holds the PAT
       // server-side and is how every read path already reaches Azure DevOps.
-      if (!error?.response) {
-        try {
-          const proxied = await axios.post('/api/ado-proxy/workitems/create', {
-            organization,
-            project,
-            type,
-            document,
-            apiVersion
-          });
-
-          return this.mapWorkItem(proxied.data);
-        } catch (proxyError: any) {
-          console.error('Error creating work item via proxy:', proxyError);
-          throw new Error(this.describeAdoError(proxyError, `Failed to create ${type}`));
-        }
+      if (error?.response) {
+        console.error('Error creating work item:', error.response.status, error.response.data);
+        throw new Error(this.describeAdoError(error, `Failed to create ${type}`));
       }
 
-      console.error('Error creating work item:', error.response?.status, error.response?.data);
-      throw new Error(this.describeAdoError(error, `Failed to create ${type}`));
+      try {
+        const proxied = await axios.post('/api/ado-proxy/workitems/create', {
+          organization,
+          project,
+          type,
+          document,
+          apiVersion
+        });
+
+        created = proxied.data;
+      } catch (proxyError: any) {
+        console.error('Error creating work item via proxy:', proxyError);
+        throw new Error(this.describeAdoError(proxyError, `Failed to create ${type}`));
+      }
     }
+
+    return this.mapWorkItem(this.assertCreatedWorkItem(created));
   }
 
   /**

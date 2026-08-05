@@ -19,13 +19,12 @@ const createdResponse = {
 
 const findPatch = (document: any[], path: string) => document.find((op) => op.path === path);
 
-beforeAll(() => {
-  mockedAxios.create.mockReturnValue({ post: clientPost } as any);
-});
-
 beforeEach(() => {
+  // CRA's jest config resets mocks between tests, so the client factory has to
+  // be re-stubbed before the service rebuilds its Axios instance.
   clientPost.mockReset();
   mockedAxios.post.mockReset();
+  mockedAxios.create.mockReturnValue({ post: clientPost } as any);
 
   adoService.updateConfig({
     organization: 'contoso',
@@ -98,6 +97,14 @@ describe('adoService.createWorkItem', () => {
 
     await expect(adoService.createWorkItem({ type: 'Task', title: 'Fix flaky test' })).rejects.toThrow(
       'Failed to create Task: TF401326: Invalid field name System.Parent.'
+    );
+  });
+
+  test('rejects the HTML sign-in page Azure DevOps returns for an invalid token', async () => {
+    clientPost.mockResolvedValue({ data: '<html>Azure DevOps Services | Sign In</html>' });
+
+    await expect(adoService.createWorkItem({ type: 'Task', title: 'Fix flaky test' })).rejects.toThrow(
+      'personal access token is likely invalid or expired'
     );
   });
 
