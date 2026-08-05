@@ -447,9 +447,13 @@ class RulesEngine {
         return { action, success: !!result, result };
       }
       case 'create_task': {
+        const title = (action.parameters.title || '').trim();
+        if (!title) {
+          throw new Error('create_task requires a non-empty "title" parameter');
+        }
         const result = await adoService.createWorkItem({
-          type: 'Task',
-          title: action.parameters.title,
+          type: action.parameters.workItemType || 'Task',
+          title,
           description: action.parameters.description,
           assignedTo: action.parameters.assignedTo,
           parentId: workItem.id,

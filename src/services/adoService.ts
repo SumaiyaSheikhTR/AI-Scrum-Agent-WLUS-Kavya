@@ -1164,6 +1164,110 @@ class AdoService {
   }
 
   /**
+   * Turn an Azure DevOps failure into a message that is useful in the UI and in
+   * automation run logs, instead of the generic "Request failed with status code 400".
+   */
+  private describeAdoError(error: any, fallback: string): string {
+    const data = error?.response?.data;
+    const adoMessage =
+      (typeof data === 'string' && data) ||
+      data?.message ||
+      data?.error?.message ||
+      (typeof data?.error === 'string' ? data.error : '') ||
+      data?.value?.Message;
+
+    if (adoMessage) {
+      return `${fallback}: ${adoMessage}`;
+    }
+
+    if (!error?.response) {
+      return `${fallback}: ${error?.message || 'no response from Azure DevOps'}`;
+    }
+
+    return `${fallback}: ${error.response.status} ${error.response.statusText || ''}`.trim();
+  }
+
+  /**
+   * Build the JSON Patch document used to create a work item.
+   *
+   * System.WorkItemType is deliberately absent: the type is taken from the
+   * `$<type>` URL segment and Azure DevOps rejects the request when it is also
+   * sent as a field. A parent is a hierarchy relation, not a field either -
+   * `System.Parent` is read-only and fails validation.
+   */
+  private buildCreateWorkItemDocument(workItemData: {
+    type: string;
+    title: string;
+    description?: string;
+    assignedTo?: string;
+    parentId?: number;
+    tags?: string[];
+    priority?: number;
+    effort?: number;
+  }): any[] {
+    const document: any[] = [
+      {
+        op: 'add',
+        path: '/fields/System.Title',
+        value: workItemData.title.trim()
+      }
+    ];
+
+    if (workItemData.description) {
+      document.push({
+        op: 'add',
+        path: '/fields/System.Description',
+        value: workItemData.description
+      });
+    }
+
+    if (workItemData.assignedTo) {
+      document.push({
+        op: 'add',
+        path: '/fields/System.AssignedTo',
+        value: workItemData.assignedTo
+      });
+    }
+
+    if (workItemData.tags && workItemData.tags.length > 0) {
+      document.push({
+        op: 'add',
+        path: '/fields/System.Tags',
+        value: workItemData.tags.join('; ')
+      });
+    }
+
+    if (workItemData.priority !== undefined && workItemData.priority !== null) {
+      document.push({
+        op: 'add',
+        path: '/fields/Microsoft.VSTS.Common.Priority',
+        value: workItemData.priority
+      });
+    }
+
+    if (workItemData.effort !== undefined && workItemData.effort !== null) {
+      document.push({
+        op: 'add',
+        path: '/fields/Microsoft.VSTS.Scheduling.Effort',
+        value: workItemData.effort
+      });
+    }
+
+    if (workItemData.parentId) {
+      document.push({
+        op: 'add',
+        path: '/relations/-',
+        value: {
+          rel: 'System.LinkTypes.Hierarchy-Reverse',
+          url: `https://dev.azure.com/${this.config?.organization}/_apis/wit/workItems/${workItemData.parentId}`
+        }
+      });
+    }
+
+    return document;
+  }
+
+  /**
    * Create a new work item
    */
   async createWorkItem(workItemData: {
@@ -1180,85 +1284,58 @@ class AdoService {
       throw new Error('ADO service not configured');
     }
 
+    const type = (workItemData.type || '').trim();
+    const title = (workItemData.title || '').trim();
+
+    if (!type) {
+      throw new Error('Cannot create work item: work item type is required');
+    }
+
+    if (!title) {
+      throw new Error('Cannot create work item: title is required');
+    }
+
+    const document = this.buildCreateWorkItemDocument({ ...workItemData, type, title });
+    const { organization, project } = this.config;
+    const apiVersion = this.config.apiVersion || '7.0';
+    const path = `/${encodeURIComponent(project)}/_apis/wit/workitems/$${encodeURIComponent(type)}`;
+
+    console.log(`Creating ${type} "${title}" with patch document:`, JSON.stringify(document));
+
     try {
-      const fields: any[] = [
-        {
-          op: 'add',
-          path: '/fields/System.Title',
-          value: workItemData.title
+      const response = await this.client.post(path, document, {
+        params: {
+          'api-version': apiVersion
         },
-        {
-          op: 'add',
-          path: '/fields/System.WorkItemType',
-          value: workItemData.type
+        headers: {
+          'Content-Type': 'application/json-patch+json'
         }
-      ];
-
-      if (workItemData.description) {
-        fields.push({
-          op: 'add',
-          path: '/fields/System.Description',
-          value: workItemData.description
-        });
-      }
-
-      if (workItemData.assignedTo) {
-        fields.push({
-          op: 'add',
-          path: '/fields/System.AssignedTo',
-          value: workItemData.assignedTo
-        });
-      }
-
-      if (workItemData.parentId) {
-        fields.push({
-          op: 'add',
-          path: '/fields/System.Parent',
-          value: workItemData.parentId
-        });
-      }
-
-      if (workItemData.tags && workItemData.tags.length > 0) {
-        fields.push({
-          op: 'add',
-          path: '/fields/System.Tags',
-          value: workItemData.tags.join(';')
-        });
-      }
-
-      if (workItemData.priority) {
-        fields.push({
-          op: 'add',
-          path: '/fields/Microsoft.VSTS.Common.Priority',
-          value: workItemData.priority
-        });
-      }
-
-      if (workItemData.effort) {
-        fields.push({
-          op: 'add',
-          path: '/fields/Microsoft.VSTS.Scheduling.Effort',
-          value: workItemData.effort
-        });
-      }
-
-      const response = await this.client.post(
-        `/${this.config.project}/_apis/wit/workitems/$${workItemData.type}`,
-        fields,
-        {
-          params: {
-            'api-version': this.config.apiVersion
-          },
-          headers: {
-            'Content-Type': 'application/json-patch+json'
-          }
-        }
-      );
+      });
 
       return this.mapWorkItem(response.data);
-    } catch (error) {
-      console.error('Error creating work item:', error);
-      throw error;
+    } catch (error: any) {
+      // No response means the browser blocked the cross-origin call to
+      // dev.azure.com; retry through the local proxy, which holds the PAT
+      // server-side and is how every read path already reaches Azure DevOps.
+      if (!error?.response) {
+        try {
+          const proxied = await axios.post('/api/ado-proxy/workitems/create', {
+            organization,
+            project,
+            type,
+            document,
+            apiVersion
+          });
+
+          return this.mapWorkItem(proxied.data);
+        } catch (proxyError: any) {
+          console.error('Error creating work item via proxy:', proxyError);
+          throw new Error(this.describeAdoError(proxyError, `Failed to create ${type}`));
+        }
+      }
+
+      console.error('Error creating work item:', error.response?.status, error.response?.data);
+      throw new Error(this.describeAdoError(error, `Failed to create ${type}`));
     }
   }
 

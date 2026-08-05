@@ -122,6 +122,7 @@ const ACTION_TYPES: RuleAction['type'][] = [
   'assign_user',
   'add_tag',
   'update_field',
+  'create_task',
   'send_notification',
 ];
 
@@ -1941,6 +1942,12 @@ export const AutomationSettingsPanel: React.FC<AutomationSettingsPanelProps> = (
                         if (type === 'add_tag') parameters = { tag: 'needs-update' };
                         if (type === 'assign_user') parameters = { userId: '' };
                         if (type === 'update_field') parameters = { field: 'state', value: '' };
+                        if (type === 'create_task')
+                          parameters = {
+                            title: 'Follow-up task',
+                            description: '',
+                            assignedTo: '',
+                          };
                         if (type === 'send_notification')
                           parameters = { message: 'Rules engine notification' };
                         actions[index] = { type, parameters };
