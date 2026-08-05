@@ -364,6 +364,61 @@ app.post('/api/ado-proxy/workitems', async (req, res) => {
   }
 });
 
+// Proxy for creating a work item (JSON Patch document built by the client)
+app.post('/api/ado-proxy/workitems/create', async (req, res) => {
+  try {
+    const { organization, project, type, document, apiVersion = '7.0' } = req.body;
+
+    // Get PAT from environment variables
+    const pat = process.env.REACT_APP_ADO_PAT;
+
+    if (!pat) {
+      return res.status(500).json({
+        error: 'ADO PAT not configured. Please set REACT_APP_ADO_PAT in environment variables.'
+      });
+    }
+
+    if (!organization || !project || !type || !Array.isArray(document) || document.length === 0) {
+      return res.status(400).json({
+        error: 'Missing required parameters: organization, project, type, document[]'
+      });
+    }
+
+    const url = `https://dev.azure.com/${organization}/${encodeURIComponent(project)}/_apis/wit/workitems/$${encodeURIComponent(type)}`;
+
+    console.log('ADO create work item proxy request:', { url, fields: document.length });
+
+    const response = await axios.post(url, document, {
+      params: {
+        'api-version': apiVersion
+      },
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`:${pat}`).toString('base64')}`,
+        'Content-Type': 'application/json-patch+json'
+      }
+    });
+
+    // An unauthenticated request is answered with an HTML sign-in page and
+    // HTTP 200, so the payload has to be checked instead of the status code.
+    if (!response.data || typeof response.data !== 'object' || response.data.id === undefined) {
+      return res.status(401).json({
+        error: 'Azure DevOps did not return a created work item. Check that REACT_APP_ADO_PAT is valid and has work item write access.'
+      });
+    }
+
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error in ADO create work item proxy:');
+    console.error('- Message:', error.message);
+    console.error('- Status:', error.response?.status);
+    console.error('- Data:', error.response?.data);
+
+    res.status(error.response?.status || 500).json({
+      error: error.response?.data?.message || error.response?.data || 'Failed to create work item'
+    });
+  }
+});
+
 // Proxy for getting repositories
 app.post('/api/ado-proxy/repositories', async (req, res) => {
   try {
