@@ -156,14 +156,9 @@ const VelocityAnalysisPanel: React.FC<VelocityAnalysisPanelProps> = ({ workItems
     }
   }, [calculateUserVelocities]); // Add calculateUserVelocities as dependency
 
-  // Auto-loading of velocity data DISABLED to prevent page refreshing
-  console.log('Velocity data auto-load DISABLED to prevent page refreshing');
-  
-  /* Original auto-load commented out:
   useEffect(() => {
     fetchVelocityData();
   }, [fetchVelocityData]);
-  */
 
   const stringToColor = (string: string) => {
     let hash = 0;

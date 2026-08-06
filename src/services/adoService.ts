@@ -170,40 +170,25 @@ class AdoService {
       this.refreshTimer = null;
     }
 
-    // Set up new timer if auto-refresh is enabled - DISABLED to prevent page refreshing
-    console.log('ADO auto-refresh timer DISABLED to prevent page refreshing');
-    
-    /* Original auto-refresh timer commented out:
     if (this.config?.enableAutoRefresh && this.config.refreshInterval > 0) {
-      const intervalMs = this.config.refreshInterval * 60 * 1000; // Convert minutes to milliseconds
+      const intervalMs = this.config.refreshInterval * 60 * 1000;
       this.refreshTimer = setInterval(() => {
-        // Trigger refresh events
         this.triggerRefresh();
       }, intervalMs);
+      console.log(`ADO auto-refresh enabled every ${this.config.refreshInterval} minute(s)`);
     }
-    */
   }
 
   /**
-   * Trigger refresh events for subscribers
+   * Trigger refresh events for subscribers (real-time, visibility-aware)
    */
   private triggerRefresh(): void {
-    // Auto-refresh DISABLED to prevent page refreshing
-    console.log('🔄 Auto-refresh disabled to prevent page refreshing');
-    return;
-
-    /* Original auto-refresh trigger commented out:
-    // Only trigger refresh if the page is visible to prevent background refreshes
-    if (document.hidden) {
-      console.log('🔄 Auto-refresh skipped - page not visible');
+    if (typeof document !== 'undefined' && document.hidden) {
       return;
     }
-    
-    // Dispatch a custom event that components can listen for
-    console.log('🔄 Auto-refresh triggered by ADO service');
-    const event = new CustomEvent('ado-data-refresh');
-    window.dispatchEvent(event);
-    */
+
+    console.log('🔄 ADO auto-refresh triggered');
+    window.dispatchEvent(new CustomEvent('ado-data-refresh'));
   }
 
   /**

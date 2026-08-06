@@ -83,9 +83,9 @@ const FilterComponent: React.FC<FilterComponentProps> = ({
         }
       } catch (error) {
         console.error('Error loading filter options:', error);
-        // Fallback data
-        if (showUserFilter && users.length === 0) {
-          setUsers(['John Doe', 'Jane Smith', 'Bob Johnson', 'Alice Williams']);
+        // Keep empty lists on failure — no dummy users
+        if (showUserFilter) {
+          setUsers([]);
         }
       } finally {
         setIsLoading(false);

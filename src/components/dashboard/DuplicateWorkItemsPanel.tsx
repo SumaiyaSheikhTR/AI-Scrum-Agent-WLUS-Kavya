@@ -38,14 +38,9 @@ const DuplicateWorkItemsPanel: React.FC = () => {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [sprintName, setSprintName] = useState('Current Sprint');
 
-  // Auto-loading of duplicate work items DISABLED to prevent page refreshing
-  console.log('Duplicate work items auto-load DISABLED to prevent page refreshing');
-  
-  /* Original auto-load and refresh listener commented out:
   useEffect(() => {
     loadDuplicateWorkItems();
 
-    // Set up refresh listener
     const handleRefresh = () => {
       loadDuplicateWorkItems();
     };
@@ -56,7 +51,6 @@ const DuplicateWorkItemsPanel: React.FC = () => {
       window.removeEventListener('ado-data-refresh', handleRefresh);
     };
   }, []);
-  */
 
   const loadDuplicateWorkItems = async () => {
     try {

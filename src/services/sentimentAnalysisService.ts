@@ -67,7 +67,7 @@ class SentimentAnalysisService {
     try {
       const configStr = localStorage.getItem('sentimentAnalysisConfig');
       if (configStr) {
-        this.config = { ...this.config, ...JSON.parse(configStr) };
+        this.config = { ...this.config, ...JSON.parse(configStr), useRealData: true };
       }
       console.log('Loaded sentiment analysis config:', this.config);
     } catch (error) {
@@ -99,10 +99,8 @@ class SentimentAnalysisService {
    * @param config New configuration (partial or complete)
    */
   updateConfig(config: Partial<SentimentAnalysisConfig>): void {
-    // Create a new config object with the updates
-    const updatedConfig = { ...this.config, ...config };
-    
-    // Update the config
+    // Force real ADO data — dummy/sample datasets are not supported
+    const updatedConfig = { ...this.config, ...config, useRealData: true };
     this.config = updatedConfig;
     
     try {

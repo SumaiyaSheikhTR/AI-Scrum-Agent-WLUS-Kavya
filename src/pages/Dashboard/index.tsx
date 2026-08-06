@@ -130,6 +130,7 @@ const Dashboard: React.FC = () => {
     availableSprints: Sprint[];
     workItems: WorkItem[];
   } | null>(null);
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Cache duration: 10 minutes (increased from 5 to reduce flickering)
   const CACHE_DURATION = 10 * 60 * 1000;
@@ -528,21 +529,15 @@ const Dashboard: React.FC = () => {
     );
   };
   useEffect(() => {
-    // Auto-refresh event listener DISABLED to prevent page refreshing
-    console.log('Auto-refresh event listener disabled for Dashboard to prevent page refreshing');
-    return;
-
-    /* Original auto-refresh event listener commented out:
     const handleDataRefresh = () => {
-      // Debounce multiple refresh requests
       if (refreshTimeoutRef.current) {
         clearTimeout(refreshTimeoutRef.current);
       }
-      
+
       refreshTimeoutRef.current = setTimeout(() => {
         console.log('🔄 Auto-refresh triggered by ADO service');
-        fetchDashboardData(true, selectedSprintId || undefined); // Force refresh when triggered externally
-      }, 1000); // 1 second debounce
+        fetchDashboardData(true, selectedSprintId || undefined);
+      }, 1000);
     };
 
     window.addEventListener('ado-data-refresh', handleDataRefresh);
@@ -553,7 +548,6 @@ const Dashboard: React.FC = () => {
         clearTimeout(refreshTimeoutRef.current);
       }
     };
-    */
   }, [fetchDashboardData, selectedSprintId]);
 
   // Separate useEffect for initial load and sprint changes - RE-ENABLED

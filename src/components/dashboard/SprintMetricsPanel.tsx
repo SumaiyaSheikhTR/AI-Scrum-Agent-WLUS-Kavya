@@ -32,98 +32,96 @@ const SprintMetricsPanel: React.FC<SprintMetricsPanelProps> = ({ sprintStats, sp
   const [velocityData, setVelocityData] = useState<VelocityDataPoint[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
-  // Auto-loading of sprint metrics DISABLED to prevent page refreshing
-  console.log('Sprint metrics auto-load DISABLED to prevent page refreshing');
-  
-  /* Original auto-load commented out:
   useEffect(() => {
     if (sprintStats) {
-      generateBurndownData();
-      fetchVelocityData();
+      void generateBurndownData();
+      void fetchVelocityData();
     }
-  }, [sprintStats]);
-  */
+  }, [sprintStats, sprintName]);
   
-  const generateBurndownData = () => {
+  const generateBurndownData = async () => {
     if (!sprintStats) return;
-    
-    // Generate burndown data based on sprint statistics
-    // In a real implementation, this would use actual daily data from ADO
-    // For now, we'll generate synthetic data based on the current stats
-    
-    const totalDays = 10; // Assuming a 2-week sprint
+
+    // Build burndown from real sprint dates + current ADO effort stats
+    let totalDays = 10;
+    let elapsedDays = 0;
+    try {
+      const currentSprint = await adoService.getCurrentSprint();
+      if (currentSprint?.startDate && currentSprint?.endDate) {
+        const start = new Date(currentSprint.startDate).getTime();
+        const end = new Date(currentSprint.endDate).getTime();
+        totalDays = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+        elapsedDays = Math.min(
+          totalDays,
+          Math.max(0, Math.ceil((Date.now() - start) / (1000 * 60 * 60 * 24)))
+        );
+      }
+    } catch (error) {
+      console.warn('Could not load sprint dates for burndown; using effort-based estimate', error);
+    }
+
     const data: BurndownDataPoint[] = [];
-    
     const startEffort = sprintStats.totalEffort;
-    const idealBurnPerDay = startEffort / totalDays;
-    
-    // Calculate how much has been burned so far
+    const idealBurnPerDay = totalDays > 0 ? startEffort / totalDays : 0;
     const burnedSoFar = sprintStats.completedEffort;
     const remainingEffort = sprintStats.remainingEffort;
-    
-    // Estimate which day we're on based on burned effort
-    const estimatedCurrentDay = Math.min(
-      Math.ceil(burnedSoFar / idealBurnPerDay),
-      totalDays
-    );
-    
-    // Generate data for each day
+    const estimatedCurrentDay =
+      elapsedDays > 0
+        ? elapsedDays
+        : Math.min(
+            Math.max(1, Math.ceil(burnedSoFar / Math.max(idealBurnPerDay, 0.0001))),
+            totalDays
+          );
+
     for (let i = 0; i < totalDays; i++) {
       const day = i + 1;
-      const ideal = Math.max(0, startEffort - (idealBurnPerDay * day));
-      
-      let actual;
+      const ideal = Math.max(0, startEffort - idealBurnPerDay * day);
+
+      let actual: number;
       if (day < estimatedCurrentDay) {
-        // Past days - generate a realistic burn pattern
-        const randomFactor = 0.9 + (Math.random() * 0.2); // Between 0.9 and 1.1
-        actual = startEffort - ((burnedSoFar / estimatedCurrentDay) * day * randomFactor);
+        // Deterministic linear burn to current completed effort (no random dummy noise)
+        actual = startEffort - (burnedSoFar / estimatedCurrentDay) * day;
       } else if (day === estimatedCurrentDay) {
-        // Current day - use actual remaining
         actual = remainingEffort;
       } else {
-        // Future days - project based on current velocity
-        const projectedBurn = (burnedSoFar / estimatedCurrentDay) * day;
+        const projectedBurn = (burnedSoFar / Math.max(estimatedCurrentDay, 1)) * day;
         actual = Math.max(0, startEffort - projectedBurn);
       }
-      
+
       data.push({
         day: `Day ${day}`,
         actual: Math.round(actual),
-        ideal: Math.round(ideal)
+        ideal: Math.round(ideal),
       });
     }
-    
+
     setBurndownData(data);
   };
-  
+
   const fetchVelocityData = async () => {
     try {
       setIsLoading(true);
-      
-      // Get past sprints
+
       const allSprints = await adoService.getSprints();
       const pastSprints = allSprints
-        .filter(sprint => sprint.state === 'past')
-        .slice(-5); // Get last 5 completed sprints
-      
+        .filter((sprint) => sprint.state === 'past' || sprint.state === 'current')
+        .sort((a, b) => new Date(a.endDate).getTime() - new Date(b.endDate).getTime())
+        .slice(-5);
+
       if (pastSprints.length === 0) {
-        // If no past sprints, use synthetic data
-        setVelocityData([
-          { sprint: 'Sprint 1', velocity: 25 },
-          { sprint: 'Sprint 2', velocity: 27 },
-          { sprint: 'Sprint 3', velocity: 30 },
-          { sprint: 'Sprint 4', velocity: 28 },
-          { sprint: 'Current', velocity: sprintStats?.completedEffort || 0 }
-        ]);
+        setVelocityData(
+          sprintStats
+            ? [{ sprint: sprintName || 'Current', velocity: sprintStats.completedEffort || 0 }]
+            : []
+        );
         return;
       }
-      
-      // Get velocity data for each past sprint
+
       const velocityPromises = pastSprints.map(async (sprint) => {
         const stats = await adoService.getSprintStatistics(sprint.id);
         return {
           sprint: sprint.name,
-          velocity: stats.completedEffort
+          velocity: stats.completedEffort,
         };
       });
       
@@ -138,14 +136,12 @@ const SprintMetricsPanel: React.FC<SprintMetricsPanelProps> = ({ sprintStats, sp
       setVelocityData(pastVelocities);
     } catch (error) {
       console.error('Error fetching velocity data:', error);
-      // Fallback to synthetic data
-      setVelocityData([
-        { sprint: 'Sprint 1', velocity: 25 },
-        { sprint: 'Sprint 2', velocity: 27 },
-        { sprint: 'Sprint 3', velocity: 30 },
-        { sprint: 'Sprint 4', velocity: 28 },
-        { sprint: 'Current', velocity: sprintStats?.completedEffort || 0 }
-      ]);
+      // No synthetic fallback — show real current sprint only when available
+      setVelocityData(
+        sprintStats
+          ? [{ sprint: sprintName || 'Current', velocity: sprintStats.completedEffort || 0 }]
+          : []
+      );
     } finally {
       setIsLoading(false);
     }

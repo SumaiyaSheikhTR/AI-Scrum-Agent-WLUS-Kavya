@@ -241,17 +241,16 @@ const SentimentAnalysisConfigForm: React.FC<SentimentAnalysisConfigProps> = ({ o
               <FormControlLabel
                 control={
                   <Switch
-                    checked={config.useRealData}
-                    onChange={handleSwitchChange}
+                    checked={true}
                     name="useRealData"
                     color="primary"
-                    disabled={!config.enableSentimentAnalysis}
+                    disabled
                   />
                 }
                 label="Use Real Data from ADO"
               />
               <Typography variant="body2" color="text.secondary">
-                If enabled, sentiment analysis will use real comments from Azure DevOps. Otherwise, sample data will be used.
+                Always uses live Azure DevOps comments. Sample/dummy datasets are disabled.
               </Typography>
             </Grid>
 
